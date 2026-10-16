@@ -1,6 +1,11 @@
-"""Bizzii gate server. Run:  uvicorn server:app --port 8000   then open http://localhost:8000
-Pages: /  gate dashboard   /onboarding  guided setup   /leads  lead generation."""
-import os, time, json, threading, itertools, re
+"""Bizzii gate server. Run:  uvicorn server:app --port 8001   (the onboarding app on :8000 proxies to it)
+
+Real by default. Trust evidence and every action awaiting the owner are persisted, so a restart or a redeploy loses nothing.
+The four agents run on real triggers (the mailbox, scheduled scans, scheduled prospecting). Nothing is seeded unless
+SEED_HISTORY=1 (once, only into an empty evidence store, and labelled on the dashboard). DEMO_MODE=1 restores the sample
+business, the scenario buttons and resets; it exists for tests and rehearsal only."""
+import os, sys, time, json, threading, re, hashlib, hmac, html as _html
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
@@ -11,28 +16,116 @@ import gate as G
 from gate import Gate, risk, tau, n_min
 from catalogue import CLASSES, AGENT_OF, LABEL_OF, AGENT_NAMES, AGENT_NEEDS, HACKATHON_EXTENSIONS
 from executors import EXECUTORS, suppressed
-from store import STORE, agent_status
-import leadgen, crawl, llm, persist, agents, console_api, compare, inbox
+from store import STORE, agent_status, demo, email_configured
+import leadgen, crawl, llm, persist, agents, console_api, compare, inbox, learning
 
-G.AUDIT_RATE = float(os.getenv("AUDIT_RATE", "0"))      # 0 for a deterministic demo, say so out loud
-RECALL_DEFAULT = 12                                     # seconds a recall-route action waits for a Stop
+G.AUDIT_RATE = float(os.getenv("AUDIT_RATE", "0" if demo() else "0.1"))   # real: 10% of promoted actions still reach the owner
+RECALL_DEFAULT = 12                                     # demo: seconds a recall-route action waits for a Stop
 RECALL_SECS = {"draft_content": 0, "flag_relationship_risk": 8, "reply_to_client": 15}
+EXPIRY_HOURS = {"escalate": 72, "approval": 96}        # an action nobody decides is withdrawn, recorded as expired, and counts for nothing
+KEEP_ACTIONS = 500                                      # finished actions kept in memory and storage (the audit trail keeps everything)
 WEB = Path(__file__).parent / "web"
 
-app = FastAPI(title="Bizzii gate API")
+@asynccontextmanager
+async def _lifespan(app):
+    boot()
+    mgr = getattr(globals().get("MCP"), "session_manager", None)      # the MCP endpoint needs its session manager running
+    if mgr is None:
+        yield
+    else:
+        async with mgr.run():
+            yield
+
+app = FastAPI(title="Bizzii gate API", lifespan=_lifespan)
 # a separately running UI on localhost (e.g. next dev on :3000) may call this API directly; deployed, everything is same-origin
 app.add_middleware(CORSMiddleware, allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?", allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory=WEB), name="static")
-gate = Gate(seed=1)
+gate = Gate(seed=None if not demo() else 1)
 lock = threading.RLock()
-ids = itertools.count(1)
+_seq = [0]
 PENDING: dict = {}
 LOG: list = []
+SCHED = {"running": False, "last_scan": None, "last_scan_result": None, "last_prospect": None, "last_prospect_result": None}
+META = {"seeded": False}
+
+def recall_secs(cls):
+    base = RECALL_SECS.get(cls, RECALL_DEFAULT) if demo() else int(os.getenv("RECALL_SECONDS", "600"))
+    return max(base, int(supervision().get("recall_seconds") or 0))       # the owner may lengthen a recall window, never shorten it
+
+# ------------------------------------------------------------------ the owner's own rules: they can only ADD supervision (FYP onboarding spec, screen 2)
+SUPERVISION_DEFAULT = {"always_ask_clients": False, "always_ask_prospects": False, "always_ask_classes": [], "paused_agents": [], "daily_cap": {}, "recall_seconds": None}
+def supervision(): return {**SUPERVISION_DEFAULT, **(persist.get("supervision") or {})}
+
+def consent_required(): return not demo() and os.getenv("PROMOTION_CONSENT", "1") != "0"
+def consent_of(agent, cls): return (persist.get("consent") or {}).get(f"{agent}|{cls}")
+def set_consent(agent, cls, value):
+    c = dict(persist.get("consent") or {}); c[f"{agent}|{cls}"] = value; persist.put("consent", c)
+
+def _uncertain(p):
+    """Escalate when unsure: an AI draft reports its own confidence; below CONFIDENCE_MIN (0.7) the owner is asked, earned or not."""
+    pl = p.payload or {}
+    try: conf = float(pl["confidence"]) if pl.get("confidence") is not None else None
+    except (TypeError, ValueError): conf = None
+    if conf is not None and conf < float(os.getenv("CONFIDENCE_MIN", "0.7")):
+        return f"only {int(conf * 100)}% sure" + (f" ({pl['unsure']})" if pl.get("unsure") else "")
+    return str(pl["unsure"])[:200] if pl.get("unsure") and conf is None else None
+
+def _auto_today(ag):
+    today = time.strftime("%Y-%m-%d")
+    return sum(1 for a in PENDING.values() if a.get("status") == "executed" and a["decision"]["route"] in ("auto", "recall") and AGENT_OF.get(a["cls"]) == ag
+               and time.strftime("%Y-%m-%d", time.localtime(a.get("executed_at", 0))) == today)
+
+def _owner_rules(p, d):
+    """Applied after the gate says an action may run alone: the owner's supervision settings, then their consent to the promotion."""
+    sup, t, ag = supervision(), CLASSES[p.cls]["sig"][0], AGENT_OF[p.cls]
+    held = ("you asked to approve this kind of action every time" if p.cls in sup["always_ask_classes"]
+            else "you asked to approve anything that reaches a client" if t == "client" and sup["always_ask_clients"]
+            else "you asked to approve anything that reaches a prospect" if t == "prospect" and sup["always_ask_prospects"]
+            else None)
+    cap = sup["daily_cap"].get(ag)
+    if not held and cap is not None and _auto_today(ag) >= int(cap): held = f"the {AGENT_NAMES[ag]} agent reached your daily cap of {cap} automatic actions"
+    if held: return {**d, "route": "approval", "why": held, "held_by": "supervision"}
+    if consent_required():
+        c = consent_of(p.agent, p.cls)
+        if c == "declined": return {**d, "route": "approval", "why": "earned, but you chose to keep approving these yourself", "held_by": "consent"}
+        if c != "granted": return {**d, "route": "approval", "why": "earned the right to do this on its own: approve it, and say whether it may do these without asking from now on", "promotion": True}
+    return d
+
+def next_id():
+    with lock:
+        _seq[0] += 1; return _seq[0]
 
 def log(msg, **kw):
     LOG.insert(0, {"t": time.strftime("%H:%M:%S"), "msg": msg, **kw}); del LOG[200:]
 
-def save(): pass   # gate evidence is rebuilt from the seed on boot (a redeploy resets the demo on purpose); the audit trail is what persists
+# ------------------------------------------------------------------ persistence: evidence and open actions survive restarts
+def save():
+    if demo(): return                                       # demo state is rebuilt from the seed on purpose
+    with lock:
+        done = sorted((a for a in PENDING.values() if a["status"] not in ("awaiting", "recall")), key=lambda a: a["id"])
+        for a in done[:-KEEP_ACTIONS] if len(done) > KEEP_ACTIONS else []: PENDING.pop(a["id"], None)
+        persist.put("gate_state", {"pairs": gate.dump(), "seq": _seq[0], "seeded": META["seeded"]})
+        persist.put("actions", {str(k): v for k, v in PENDING.items()})
+
+def load_state():
+    st = persist.get("gate_state") or {}
+    with lock:
+        gate.load(st.get("pairs", {}))
+        PENDING.clear(); PENDING.update({int(k): v for k, v in (persist.get("actions") or {}).items()})
+        _seq[0] = max([int(st.get("seq", 0)), *PENDING.keys()] or [0])
+        META["seeded"] = bool(st.get("seeded"))
+    return len(gate.pairs), sum(1 for a in PENDING.values() if a["status"] in ("awaiting", "recall"))
+
+def trust_event(agent, cls, event, before=None):
+    """Record the measures after a piece of evidence, for the trust timeline. Flags the moment a class is earned or lost."""
+    ok, why, m = gate.evaluate(agent, cls)
+    rec = {"agent": agent, "cls": cls, "event": event, "W": round(m["W"], 3), "A": round(m["A"], 3), "D": round(m["D"], 3), "nW": m["nW"], "earned": ok}
+    if before is not None and before != ok:
+        rec["change"] = "earned" if ok else "lost"
+        log(f"{'PROMOTED' if ok else 'DEMOTED'}: {AGENT_NAMES.get(agent, agent)} on '{LABEL_OF.get(cls, cls)}' ({why})")
+    persist.append("trust_events", rec)
+
+def _earned(agent, cls): return gate.evaluate(agent, cls)[0]
 
 def audit(event, a, **kw):
     """Append-only audit trail: every proposal, decision and execution, with the route, risk and the reason."""
@@ -43,8 +136,9 @@ def execute(a):
     try: ok = EXECUTORS[a["cls"]](a["payload"])
     except Exception as e:                                # a broken executor records a failed outcome, never crashes the server
         ok = False; log(f"executor error {type(e).__name__} on #{a['id']}")
-    a["status"] = "executed"; a["verified"] = ok; audit("executed", a, verified=ok)
-    if ok is not None: gate.record_outcome(a["agent"], a["cls"], bool(ok))
+    a["status"] = "executed"; a["verified"] = ok; a["executed_at"] = time.time(); audit("executed", a, verified=ok)
+    if ok is not None:
+        before = _earned(a["agent"], a["cls"]); gate.record_outcome(a["agent"], a["cls"], bool(ok)); trust_event(a["agent"], a["cls"], "outcome_ok" if ok else "outcome_failed", before)
     log(f"executed {a['cls']} #{a['id']} ({'verified' if ok else 'FAILED postcondition' if ok is False else 'unverified'})")
     save()
     try: _after(a, ok)
@@ -62,6 +156,43 @@ def _after(a, ok):
         out = _submit(specs); a["followups"] = [x["id"] for x in out]
         log(f"#{a['id']} set {len(out)} follow-on proposal{'s' if len(out) != 1 else ''} in motion", id=a["id"])
 
+# ------------------------------------------------------------------ guardrails that need the business memory (the gate engine stays pure)
+def _on_record(cls, cp, to):
+    """FYP guardrail: an outward message may only go to an address already on record for that recipient."""
+    to = (to or "").strip().lower()
+    if not to or "@" not in to: return "has no valid recipient address"
+    seen_in = lambda owner: any(to in x["text"].lower() for x in STORE.of(owner).values())       # e.g. the From of a recorded message
+    if cls in ("reply_to_client", "followup_client_no_reply"):
+        c = STORE.client(cp); ok = bool(c) and (c["contact"]["email"].lower() == to or seen_in(cp))
+    elif cls in ("send_lead_outreach", "send_lead_followup"):
+        l = leadgen.LEADS.get(cp); ok = bool(l) and (l.get("email") or "").lower() == to
+    elif cls == "reply_to_enquiry":
+        ok = cp == "enq-" + hashlib.sha1(to.encode()).hexdigest()[:6] and seen_in(cp)
+    elif cls == "notify_owner_unread_file":
+        ok = to == (STORE.profile["business"]["owner"].get("email") or "").lower()
+    elif cls == "notify_teammate_assignment":
+        ok = to in {(m.get("email") or "").lower() for m in STORE.team()}
+    else: ok = True
+    return None if ok else f"addresses {to}, which is not on record for this recipient"
+
+def _pre_guard(p):
+    """Recipient-on-record and no-unrecorded-price-or-date, for every outward message (each message of a campaign separately)."""
+    t, e = CLASSES[p.cls]["sig"][:2]
+    if e not in ("communicate", "broadcast"): return None
+    if p.cls == "publish_post":
+        texts = [STORE.facts[i]["text"] for i in p.cited if i in STORE.facts]
+        return G.content_guardrail(p.payload.get("text", ""), texts)
+    cited_by = {it.get("counterparty"): it.get("cited", []) for it in p.items}
+    msgs = p.payload.get("recipients") or [{"lead": p.counterparty, "to": p.payload.get("to"), "subject": p.payload.get("subject", ""), "body": p.payload.get("body", "")}]
+    for m in msgs:
+        cp = m.get("lead") or p.counterparty
+        why = _on_record(p.cls, cp, m.get("to"))
+        if not why and t in ("client", "prospect", "public"):
+            texts = [STORE.facts[i]["text"] for i in cited_by.get(cp, p.cited) if i in STORE.facts]
+            why = G.content_guardrail(f"{m.get('subject', '')}\n{m.get('body', '')}", texts)
+        if why: return (f"{_who(cp)}: " if len(msgs) > 1 else "") + why
+    return None
+
 # ------------------------------------------------------------------ the gate API
 class Proposal(BaseModel):
     agent: str = "sales"
@@ -76,12 +207,19 @@ class Proposal(BaseModel):
 @app.get("/health")
 def health(): return {"ok": True}
 
+def _refuse(p, why): return {"route": "refuse", "risk": risk(p.cls), "why": why}
+
 def _propose(p: Proposal):
     if p.cls not in CLASSES: raise HTTPException(400, "unknown action class")
     with lock:
         status = agent_status(STORE.profile).get(AGENT_OF[p.cls], {"active": True})
-        if not status["active"]:                          # onboarding alternative flow: declined connection -> agent inactive
-            d = {"route": "refuse", "risk": risk(p.cls), "why": f"{AGENT_NAMES[AGENT_OF[p.cls]]} agent is inactive: {', '.join(status['missing'])} not connected"}
+        paused = AGENT_OF[p.cls] in supervision()["paused_agents"]
+        if not STORE.onboarded():
+            d = _refuse(p, "no business is recorded yet: complete onboarding first")
+        elif paused:
+            d = _refuse(p, f"{AGENT_NAMES[AGENT_OF[p.cls]]} agent is paused by you (supervision settings)")
+        elif not status["active"]:                          # declined in onboarding, or no mailbox configured
+            d = _refuse(p, f"{AGENT_NAMES[AGENT_OF[p.cls]]} agent is inactive: {'; '.join(status['missing'])}")
         else:
             allowed, bad = STORE.allowed_for(p.counterparty), None
             for it in p.items:                            # batch: every message may cite only its own recipient's facts (or the business's)
@@ -90,18 +228,28 @@ def _propose(p: Proposal):
                 if leaked or not it.get("cited"):
                     bad = f"{_who(it.get('counterparty',''))}: " + (f"cites facts outside this recipient: {leaked}" if leaked else "cites no facts"); break
                 allowed |= ok_ids
-            if bad: d = {"route": "refuse", "risk": risk(p.cls), "why": "campaign refused, " + bad}
-            else: d = gate.decide(p.agent, p.cls, p.cited, allowed, {"prior_contact": p.prior_contact})
-        a = {"id": next(ids), "agent": p.agent, "cls": p.cls, "label": LABEL_OF[p.cls], "counterparty": p.counterparty,
+            if bad: d = _refuse(p, "campaign refused, " + bad)
+            else:
+                unsure = _uncertain(p)
+                d = gate.decide(p.agent, p.cls, p.cited, allowed, {"prior_contact": p.prior_contact, "uncertain": unsure})
+                if d["route"] != "refuse":
+                    why = _pre_guard(p)
+                    if why: d = _refuse(p, why)
+                if d["route"] in ("auto", "recall"): d = _owner_rules(p, d)
+                if unsure and d["route"] in ("approval", "escalate") and "unsure" not in d["why"]: d = {**d, "why": f"{d['why']}; the agent is also unsure: {unsure}", "unsure": unsure}
+                elif unsure: d = {**d, "unsure": unsure}
+        a = {"id": next_id(), "agent": p.agent, "cls": p.cls, "label": LABEL_OF[p.cls], "counterparty": p.counterparty,
              "who": p.who or _who(p.counterparty), "payload": p.payload, "cited": p.cited,
              "facts": [STORE.facts[i]["text"] for i in p.cited if i in STORE.facts], "decision": d, "created": time.time()}
         r = d["route"]
         if r == "refuse": a["status"] = "refused"
-        elif r in ("approval", "escalate"): a["status"] = "awaiting"
-        elif r == "recall": a["status"] = "recall"; a["recall_until"] = time.time() + RECALL_SECS.get(p.cls, RECALL_DEFAULT)
+        elif r in ("approval", "escalate"): a["status"] = "awaiting"; a["expires_at"] = time.time() + EXPIRY_HOURS[r] * 3600
+        elif r == "recall": a["status"] = "recall"; a["recall_until"] = time.time() + recall_secs(p.cls)
         PENDING[a["id"]] = a; audit("proposed", a, cited=p.cited)
+        if a.get("status") in ("awaiting", "recall"): alert_owner(a)
         log(f"{LABEL_OF[p.cls]} for {a['who']} -> {r.upper()}: {d['why']}", id=a["id"])
         if r == "auto": execute(a)
+        else: save()
         return a
 
 @app.post("/propose")
@@ -119,7 +267,23 @@ def _who(cp):
 
 class Decision(BaseModel):
     id: int
-    kind: str      # approve | preference | quality
+    kind: str                     # approve | preference | quality
+    reason: str = ""              # "Wrong, because ..." / "I'd rather do it myself, because ...": taught to the agent
+    edits: dict = {}              # approve with changes: {subject?, body?, text?}
+    allow_autonomy: bool = False  # on an earned action: "and let it do these on its own from now on"
+
+def _apply_edits(a, edits):
+    """The owner corrected the draft before approving: send their version, keep the original, and let the agent learn from the difference."""
+    p = a["payload"]
+    for f in ("subject", "body", "text"):
+        new = edits.get(f)
+        if isinstance(new, str) and new.strip() and new != p.get(f):
+            a.setdefault("original", {})[f] = p.get(f); p[f] = new; a["edited"] = True
+            if f in ("body", "text"): learning.add_edit(a["agent"], a["cls"], a["original"][f] or "", new)
+
+def _release_leads(a):
+    if a["cls"] == "send_lead_outreach":
+        for lid in ([r["lead"] for r in a["payload"].get("recipients", [])] or [a["counterparty"]]): leadgen.release(lid)
 
 @app.post("/decision")
 def decision(d: Decision):
@@ -127,23 +291,40 @@ def decision(d: Decision):
     with lock:
         a = PENDING.get(d.id)
         if not a or a["status"] not in ("awaiting", "recall"): raise HTTPException(409, "not decidable")
-        gate.record_decision(a["agent"], a["cls"], d.kind); audit("owner_" + d.kind, a)
+        if d.kind == "approve" and d.edits: _apply_edits(a, d.edits)
+        before = _earned(a["agent"], a["cls"]); gate.record_decision(a["agent"], a["cls"], d.kind); trust_event(a["agent"], a["cls"], d.kind, before)
+        audit("owner_" + d.kind, a, **({"reason": d.reason[:300]} if d.reason else {}), **({"edited": True} if a.get("edited") else {}))
+        if d.reason: learning.add_reason(a["agent"], a["cls"], d.kind, d.reason); a["reason"] = d.reason[:300]
+        if d.kind == "approve" and d.allow_autonomy:
+            set_consent(a["agent"], a["cls"], "granted"); audit("autonomy_granted", a); log(f"you let {a['agent']} do '{a['label']}' on its own from now on")
+        a["decided_at"] = time.time()
         if d.kind == "approve": execute(a)
         else:
-            a["status"] = "declined"
-            if a["cls"] == "send_lead_outreach":          # declined outreach: those leads are eligible again
-                for lid in ([r["lead"] for r in a["payload"].get("recipients", [])] or [a["counterparty"]]): leadgen.release(lid)
+            a["status"] = "declined"; _release_leads(a)       # declined outreach: those leads are eligible again
             log(f"owner declined #{a['id']} ({'prefers to do it personally' if d.kind=='preference' else 'proposal wrong'})")
         save()
         return a
 
-def recall_loop():
+def expire(now=None):
+    """Withdraw actions nobody decided in time. Recorded as expired; counts toward no measure (an unanswered question is not evidence)."""
+    now, n = now or time.time(), 0
+    with lock:
+        for a in list(PENDING.values()):
+            if a.get("status") == "awaiting" and now >= a.get("expires_at", a["created"] + EXPIRY_HOURS.get(a["decision"]["route"], 96) * 3600):
+                a["status"] = "expired"; audit("expired", a); _release_leads(a); n += 1
+        if n: log(f"{n} undecided action{'s' if n != 1 else ''} expired"); save()
+    return n
+
+def _timer_loop():
     while True:
         time.sleep(0.5)
-        with lock:
-            for a in list(PENDING.values()):
-                if a["status"] == "recall" and time.time() >= a["recall_until"]: execute(a)
-threading.Thread(target=recall_loop, daemon=True).start()
+        try:
+            with lock:
+                for a in list(PENDING.values()):
+                    if a.get("status") == "recall" and time.time() >= a["recall_until"]: execute(a)
+            expire()
+        except Exception as e: print(f"[timers] {type(e).__name__}: {e}")
+threading.Thread(target=_timer_loop, daemon=True).start()
 
 @app.get("/state")
 def state():
@@ -158,44 +339,59 @@ def state():
             classes.append({"cls": c, "label": LABEL_OF[c], "agent": ag, "risk": R, "tau": tau(R), "n_min": n_min(R), "earned": ok, "why": why,
                             "suggest_delegate": f"The {AGENT_NAMES[ag]} agent is sound on '{LABEL_OF[c]}'. Want it to handle these without asking?" if sd else None,
                             "W": m["W"], "A": m["A"], "D": m["D"], "nW": m["nW"], "counts": m["counts"], "sig": CLASSES[c]["sig"],
-                            "floor": G.floor_rule(c, {}), "extension": c in HACKATHON_EXTENSIONS})
+                            "floor": fl, "extension": c in HACKATHON_EXTENSIONS})
         pend = [dict(a, secs_left=max(0, round(a.get("recall_until", 0) - time.time(), 1)))
                 for a in PENDING.values() if a["status"] in ("awaiting", "recall")]
         return {"classes": classes, "pending": sorted(pend, key=lambda a: a["id"]),
                 "recent": sorted(PENDING.values(), key=lambda a: -a["id"])[:12], "log": LOG[:40],
                 "business": STORE.profile["business"]["name"], "profile_source": STORE.profile.get("source"),
-                "agents": agent_status(STORE.profile), "agent_names": AGENT_NAMES, "llm": llm.available()}
+                "agents": agent_status(STORE.profile), "agent_names": AGENT_NAMES, "llm": llm.available(),
+                "mode": "demo" if demo() else "real", "onboarded": STORE.onboarded(), "seeded_history": META["seeded"],
+                "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"]},
+                "email": {"live": os.getenv("SEND_LIVE") == "1", "test_inbox": os.getenv("TEST_INBOX", ""), "mailbox": email_configured(),
+                          "sender": os.getenv("SMTP_USER", "")},
+                "agent_open": {ag: sum(1 for a in PENDING.values() if a["status"] in ("awaiting", "recall") and AGENT_OF.get(a["cls"]) == ag) for ag in AGENT_NAMES},
+                "agent_last": {ag: next((f"{a['label']}: {a['who']} ({a['decision']['route']})" for a in sorted(PENDING.values(), key=lambda x: -x["id"]) if AGENT_OF.get(a["cls"]) == ag), None) for ag in AGENT_NAMES}}
 
-# ------------------------------------------------------------------ seeded history for the demo (say so out loud)
-SEED = {  # (agent, class): approved decisions + verified outcomes
-    ("project", "assign_subtask"):          {"a": 5, "ok": 5},   # one more live approval flips it to AUTO
-    ("operations", "flag_relationship_risk"): {"a": 8, "ok": 8}, # earned, partial verifiability -> recall window
-    ("operations", "reply_to_client"):      {"a": 6, "ok": 6},   # decent but below the evidence minimum -> still asks
-    ("project", "reassign_stalled_task"):   {"a": 7, "ok": 7},   # PM trusted here; nothing carries to other classes
-    ("marketing", "draft_content"):         {"a": 6, "ok": 6},   # Marketing drafts freely (short recall)
-    ("project", "notify_teammate_assignment"): {"a": 7, "ok": 7}, # telling a teammate about work already assigned: earned
+# ------------------------------------------------------------------ starting history: seeded only in demo, or once on request (labelled)
+SEED = {  # (agent, class): approved decisions + verified outcomes. Sized to the report's thresholds.
+    ("project", "assign_subtask"):             {"a": 7, "ok": 7},    # needs 8: one more approval flips it to AUTO
+    ("operations", "flag_relationship_risk"):  {"a": 9, "ok": 9},    # earned, partial verifiability -> recall window
+    ("operations", "reply_to_client"):         {"a": 6, "ok": 6},    # needs 13: still asks
+    ("project", "reassign_stalled_task"):      {"a": 10, "ok": 10},  # PM trusted here; nothing carries to other classes
+    ("marketing", "draft_content"):            {"a": 9, "ok": 9},    # Marketing drafts freely (recall)
+    ("project", "notify_teammate_assignment"): {"a": 11, "ok": 11},  # telling a teammate about work already assigned: earned
 }
 
-def _reset_gate(seed=True):
-    gate.pairs.clear(); PENDING.clear(); LOG.clear()
-    if seed:
+def _seed():
+    for (ag, c), s in SEED.items():
+        for _ in range(s["a"]): gate.record_decision(ag, c, "approve")
+        for _ in range(s["ok"]): gate.record_outcome(ag, c, True)
+    if not demo():                                     # part of the labelled starting history: the owner had already let these run alone
         for (ag, c), s in SEED.items():
-            for _ in range(s["a"]): gate.record_decision(ag, c, "approve")
-            for _ in range(s["ok"]): gate.record_outcome(ag, c, True)
-    log("demo reset" + (" with SEEDED history" if seed else " with empty history")); save()
+            if (ag, c) != ("project", "assign_subtask") and gate.evaluate(ag, c)[0]: set_consent(ag, c, "granted")
+
+def _reset_gate(seed=True):
+    gate.pairs.clear(); PENDING.clear(); LOG.clear(); _seq[0] = 0
+    if seed: _seed()
+    log("demo reset" + (" with SEEDED history" if seed else " with empty history"))
+
+def _demo_only(what):
+    if not demo(): raise HTTPException(403, f"{what} exists only in DEMO_MODE; this is the real system")
 
 @app.post("/reset")
 def reset(seed: bool = True, full: bool = False):
+    _demo_only("Reset")
     with lock:
         _reset_gate(seed)
         if full:
             leadgen.clear(); persist.delete("lead_facts"); STORE.reset_demo(); STORE.load()
-            for k in ("tasks", "crm", "drafts", "projects", "retained", "suppressed"): persist.delete(k)
+            for k in ("tasks", "crm", "drafts", "projects", "retained", "suppressed", "sales_targets"): persist.delete(k)
             for st in ("messages", "documents_read"): persist.clear_stream(st)
             persist.clear_stream("outbox"); persist.clear_stream("audit")
     return {"ok": True}
 
-# ------------------------------------------------------------------ scenarios (built from the live profile)
+# ------------------------------------------------------------------ scenarios (DEMO_MODE only, built from the live profile)
 def _clients(): return [c for c in STORE.clients() if c.get("status") != "past"] or STORE.clients()
 
 def _cite(owner, *kinds): return [i for k in kinds if (i := STORE.fid(owner, k))]
@@ -222,7 +418,6 @@ def scenario_spec(name):
         return dict(agent="operations", cls="reply_to_client", counterparty=c1["id"], cited=_cite(c1["id"], "client.status", "client.notes"),
                     payload=_client_email(c1))
     if name == "assign":
-        # reassign a REAL task: if the (simulated) task tool has none for this client, it holds one that has sat untouched for 11 days
         tasks = list(persist.get("tasks", []) or [])
         t = next((x for x in tasks if x.get("status") != "complete" and x.get("client_id") == c3["id"] and x.get("assignee") != dev["name"]), None)
         if not t:
@@ -258,6 +453,7 @@ def _client_email(c):
 
 @app.post("/scenario/{name}")
 def scenario(name: str):
+    _demo_only("Scenario buttons")
     spec = scenario_spec(name)
     if not spec: raise HTTPException(409, "nothing to propose")
     return propose(Proposal(**spec))
@@ -268,13 +464,18 @@ def get_profile(): return STORE.profile
 
 @app.post("/api/profile")
 def set_profile(p: dict):
-    """Receives the wizard's fixture-format export. Becomes the business memory every agent reads."""
+    """Receives the wizard's fixture-format export. Becomes the business memory every agent reads. In real mode the gate's evidence is kept:
+    editing the business does not wipe what the agents have earned."""
     if not isinstance(p.get("business"), dict) or not p["business"].get("name"): raise HTTPException(400, "business name required")
     p.setdefault("team", []); p.setdefault("clients", []); p.setdefault("brand", {}); p.setdefault("connections", {})
     p["source"] = "onboarding"
     with lock:
-        STORE.set_profile(p); _reset_gate(True)   # fresh evidence for a new business: every class starts at zero (seeded for the demo)
+        first = not STORE.onboarded()
+        STORE.set_profile(p)
+        if demo(): _reset_gate(True)
         log(f"onboarding saved for {p['business']['name']}: {len(p['team'])} team, {len(p['clients'])} clients")
+    if first and not demo():                                # who to prospect is planned from the profile the moment it exists
+        threading.Thread(target=lambda: leadgen.plan_targets(force=True), daemon=True).start()
     return {"ok": True, "facts": len(STORE.facts)}
 
 @app.get("/api/facts")
@@ -286,6 +487,7 @@ def catalogue_view():
     for c in CLASSES:
         R = risk(c); fl = G.floor_rule(c, {})
         out.append({"cls": c, "label": LABEL_OF[c], "agent": AGENT_OF[c], "agent_name": AGENT_NAMES[AGENT_OF[c]], "needs": AGENT_NEEDS[AGENT_OF[c]],
+                    "risk": round(R, 3), "tau": round(tau(R), 3), "n_min": n_min(R),
                     "ceiling": "escalation" if fl else ("automatic" if CLASSES[c]["sig"][3] == "full" else "recall"), "extension": c in HACKATHON_EXTENSIONS})
     return out
 
@@ -332,6 +534,13 @@ class CampaignReq(BaseModel):
 class TaskStatus(BaseModel):
     status: str      # open | in_progress | complete
 
+class Target(BaseModel):
+    keyword: str
+    geo: str = ""
+
+class Targets(BaseModel):
+    targets: list[Target]
+
 def _submit(specs):
     out = []
     for s in specs:
@@ -340,10 +549,18 @@ def _submit(specs):
                     "why": a["decision"]["why"], "status": a["status"], "payload": a["payload"], "facts": a["facts"]})
     return out
 
-def process_inbound(sender: str, subject: str, body: str, attachments=()):
+def _dedup(specs, days=None):
+    """Scans run on a timer: never propose the same thing twice while one is open or was proposed recently."""
+    days = float(os.getenv("DEDUP_DAYS", "3")) if days is None else days
+    key = lambda cls, cp, pl: (cls, pl.get("task_id") if cls == "reassign_stalled_task" else cp)
+    recent = {key(a["cls"], a["counterparty"], a["payload"]) for a in PENDING.values()
+              if a["status"] in ("awaiting", "recall") or time.time() - a["created"] < days * 86400}
+    return [s for s in specs if key(s["cls"], s["counterparty"], s["payload"]) not in recent]
+
+def process_inbound(sender: str, subject: str, body: str, attachments=(), message_id: str = ""):
     """One inbound message through the Operations agent. Shared by the API and the mailbox poller."""
     atts = [a if isinstance(a, dict) else a.model_dump() for a in attachments]
-    out = _submit(agents.ops_inbound(sender.strip()[:120], subject.strip()[:160], body.strip()[:6000], atts))
+    out = _submit(agents.ops_inbound(sender.strip()[:120], subject.strip()[:160], body.strip()[:6000], atts, message_id=(message_id or "")[:300]))
     first = out[0] if out else {}
     persist.append("messages", {"id": f"m{int(time.time()*1000)%10**7:x}", "from": sender.strip()[:120], "subj": subject.strip()[:160] or "(no subject)", "attachments": len(atts),
                                 "facts": len(first.get("facts", [])), "ok": first.get("route") != "refuse", "enquiry": any(x["cls"] == "reply_to_enquiry" for x in out),
@@ -357,8 +574,8 @@ def agents_inbound(m: Inbound):
 
 @app.post("/api/agents/ops/scan")
 def agents_scan(days: int = 14):
-    out = _submit(agents.ops_scan(max(1, min(days, 365))))
-    if not out: raise HTTPException(409, f"No active client has been quiet for {days} days or more.")
+    out = _submit(_dedup(agents.ops_scan(max(1, min(days, 365)))))
+    if not out: raise HTTPException(409, f"No active client has been quiet for {days} days or more (or one is already waiting on you).")
     return out
 
 @app.post("/api/agents/pm/plan")
@@ -372,7 +589,7 @@ def agents_plan(r: PlanReq):
 @app.post("/api/agents/pm/stalled")
 def agents_stalled(days: float = 7):
     """Find open tasks with no progress and propose handing each to a better-placed teammate."""
-    out = _submit(agents.pm_stalled(max(0, min(days, 365))))
+    out = _submit(_dedup(agents.pm_stalled(max(0, min(days, 365)))))
     if not out: raise HTTPException(409, f"No open task has been stalled for {days:g} days or more.")
     return out
 
@@ -397,16 +614,87 @@ def agents_brand(r: BrandReq):
     if not out: raise HTTPException(400, "no change given")
     return out
 
+def _campaign(lead_ids=None, name=None):
+    spec, skipped = leadgen.campaign_proposal(lead_ids or None, name or None)
+    if not spec: return None, skipped
+    return propose(Proposal(**spec)), skipped
+
 @app.post("/api/agents/sales/campaign")
 def agents_campaign(r: CampaignReq):
     """One proposal covering a batch of drafted leads: one decision from the owner, every message checked against its own recipient."""
-    spec, skipped = leadgen.campaign_proposal(r.lead_ids or None, r.name.strip()[:80] or None)
-    if not spec: raise HTTPException(409, "No lead is ready: " + (", ".join(f"{s['lead']} ({s['why']})" for s in skipped[:5]) or "the lead bank is empty"))
-    a = propose(Proposal(**spec))
-    return {"id": a["id"], "route": a["decision"]["route"], "why": a["decision"]["why"], "status": a["status"], "recipients": len(spec["payload"]["recipients"]),
-            "campaign": spec["payload"]["campaign"], "skipped": skipped, "to": [{"lead": x["name"], "email": x["to"]} for x in spec["payload"]["recipients"]]}
+    a, skipped = _campaign(r.lead_ids, r.name.strip()[:80])
+    if not a: raise HTTPException(409, "No lead is ready: " + (", ".join(f"{s['lead']} ({s['why']})" for s in skipped[:5]) or "the lead bank is empty"))
+    rec = a["payload"].get("recipients", [])
+    return {"id": a["id"], "route": a["decision"]["route"], "why": a["decision"]["why"], "status": a["status"], "recipients": len(rec),
+            "campaign": a["payload"].get("campaign"), "skipped": skipped, "to": [{"lead": x["name"], "email": x["to"]} for x in rec]}
 
-# ------------------------------------------------------------------ the simulated task tool (what teammates do outside Bizzii)
+@app.get("/api/sales/targets")
+def sales_targets(): return leadgen.plan_targets()
+
+@app.put("/api/sales/targets")
+def sales_targets_set(t: Targets):
+    """The owner decides who to prospect. Overrides the AI's plan until the owner asks for a re-plan."""
+    if not t.targets: raise HTTPException(400, "give at least one business type")
+    return leadgen.set_targets([x.model_dump() for x in t.targets])
+
+@app.post("/api/sales/targets/replan")
+def sales_targets_replan():
+    if not STORE.onboarded(): raise HTTPException(409, "complete onboarding first: the targets are planned from the business profile")
+    return leadgen.plan_targets(force=True)
+
+def run_prospecting():
+    """One scheduled Sales run: search, read sites, score, draft, then ONE campaign for whatever is ready (escalated to the owner)."""
+    if not STORE.onboarded(): return {"skipped": "not onboarded"}
+    if not agent_status(STORE.profile)["sales"]["active"]: return {"skipped": "Sales agent inactive: " + "; ".join(agent_status(STORE.profile)["sales"]["missing"])}
+    res = leadgen.auto_prospect(per_run=int(os.getenv("PROSPECT_PER_RUN", "6")))
+    if res.get("ready") and not any(a["cls"] == "send_lead_outreach" and a["status"] == "awaiting" for a in PENDING.values()):
+        a, skipped = _campaign(res["ready"], f"Auto: {res['target']['keyword']} {res['target']['geo']}".strip())
+        res["campaign"] = a and {"id": a["id"], "route": a["decision"]["route"], "recipients": len(a["payload"].get("recipients", []))}
+    SCHED.update(last_prospect=time.strftime("%Y-%m-%d %H:%M:%S"), last_prospect_result={k: v for k, v in res.items() if k != "found"} | {"found": (res.get("found") or {}).get("added")})
+    return res
+
+@app.post("/api/agents/sales/prospect")
+def agents_prospect():
+    if not STORE.onboarded(): raise HTTPException(409, "complete onboarding first")
+    return run_prospecting()
+
+def run_scans():
+    """Scheduled Operations and Project Management sweeps: quiet clients and stalled tasks, never duplicating an open proposal."""
+    if not STORE.onboarded(): return {"skipped": "not onboarded"}
+    res = {"quiet_clients": _submit(_dedup(agents.ops_scan(int(os.getenv("QUIET_DAYS", "14"))))),
+           "stalled_tasks": _submit(_dedup(agents.pm_stalled(float(os.getenv("STALL_DAYS", "7")))))}
+    SCHED.update(last_scan=time.strftime("%Y-%m-%d %H:%M:%S"), last_scan_result={k: len(v) for k, v in res.items()})
+    return res
+
+@app.post("/api/agents/run")
+def agents_run():
+    """Run the scheduled sweeps now (they also run on their own timer)."""
+    return {"scans": {k: len(v) for k, v in run_scans().items()} if STORE.onboarded() else "not onboarded"}
+
+@app.get("/api/agents/status")
+def agents_status():
+    return {"agents": agent_status(STORE.profile), "scheduler": SCHED, "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"],
+            "last_poll": inbox.STATE["last_poll"], "last_result": inbox.STATE["last_result"]}, "targets": persist.get("sales_targets"), "onboarded": STORE.onboarded()}
+
+def start_scheduler():
+    """The agents' own clock: sweeps every SCAN_EVERY_MIN (default 360), prospecting every PROSPECT_EVERY_MIN (default 720). AGENT_SCHEDULE=0 turns it off."""
+    if SCHED["running"] or demo() or os.getenv("AGENT_SCHEDULE", "1") == "0": return False
+    SCHED["running"] = True
+    def loop():
+        scan_every = max(5, int(os.getenv("SCAN_EVERY_MIN", "360"))) * 60
+        prospect_every = max(30, int(os.getenv("PROSPECT_EVERY_MIN", "720"))) * 60
+        next_scan, next_prospect = time.time() + 90, time.time() + 180              # first run shortly after boot
+        while True:
+            time.sleep(30)
+            try:
+                if time.time() >= next_scan: run_scans(); next_scan = time.time() + scan_every
+                if os.getenv("PROSPECT_AUTO", "1") != "0" and time.time() >= next_prospect: run_prospecting(); next_prospect = time.time() + prospect_every
+                if time.localtime().tm_hour == int(os.getenv("DIGEST_HOUR", "18")) and SCHED.get("last_digest", "")[:10] != time.strftime("%Y-%m-%d"): send_digest()
+            except Exception as e:
+                print(f"[scheduler] {type(e).__name__}: {e}")
+    threading.Thread(target=loop, daemon=True).start(); return True
+
+# ------------------------------------------------------------------ Bizzii's task board (teammates update status here)
 @app.get("/api/tasks")
 def tasks_list(): return persist.get("tasks", []) or []
 
@@ -419,7 +707,8 @@ def task_status(tid: int, s: TaskStatus):
 
 @app.post("/api/demo/age_tasks")
 def age_tasks(days: float = 10):
-    """Demo helper: pretend open tasks last moved `days` ago, so the stalled-task scan has something to find."""
+    """DEMO_MODE only: pretend open tasks last moved `days` ago, so the stalled-task scan has something to find."""
+    _demo_only("Ageing tasks")
     tasks = list(persist.get("tasks", []) or [])
     for t in tasks:
         if t.get("status") != "complete": t["updated"] = time.time() - days * 86400
@@ -447,6 +736,19 @@ def unsubscribe(token: str):
         if (l.get("email") or "").lower() == email: leadgen.optout(l["id"])
     persist.append("audit", {"event": "unsubscribed", "id": 0, "cls": "-", "label": "Unsubscribe link used", "who": email, "agent": "-", "route": "-", "risk": 0, "why": "recipient opted out"})
     return HTMLResponse(f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:480px;margin:15vh auto;padding:0 20px'><h2>You are unsubscribed.</h2><p>{email} will not be contacted again.</p></body>")
+
+@app.post("/api/email/test")
+def email_test():
+    """Send one check message to the test inbox (TEST_INBOX), through the same path approved emails take."""
+    import executors
+    to = os.getenv("TEST_INBOX", "").strip()
+    if not to: raise HTTPException(409, "TEST_INBOX is not set")
+    if not email_configured(): raise HTTPException(409, "No mailbox configured: set SMTP_HOST, SMTP_USER and SMTP_PASSWORD")
+    ok = executors.send_email({"to": to, "subject": "Bizzii email check", "body": f"This is a test from Bizzii for {STORE.profile['business'].get('name') or 'your business'}.\n\n"
+                               "If you can read this, approved emails will be delivered."}, internal=True)
+    last = persist.tail("outbox", 1)[0] if persist.tail("outbox", 1) else {}
+    if not ok: raise HTTPException(502, f"Sending failed ({last.get('error') or 'unknown error'})")
+    return {"ok": True, "delivered_to": last.get("delivered_to"), "live": os.getenv("SEND_LIVE") == "1"}
 
 @app.get("/api/team")
 def team_view(): return {"team": STORE.team(), "clients": [{"id": c["id"], "name": c["name"], "status": c.get("status"), "email": c["contact"]["email"], "last_contact": c.get("last_contact")} for c in STORE.clients()]}
@@ -521,6 +823,299 @@ def audit_view(n: int = 60): return persist.tail("audit", min(n, 200))
 @app.get("/api/storage")
 def storage(): return {"backend": persist.backend()}
 
+# ------------------------------------------------------------------ one-tap decisions from the owner's phone
+def _alert_secret():
+    return (os.getenv("APPROVAL_SECRET") or os.getenv("UNSUB_SECRET") or hashlib.sha256((os.getenv("SMTP_PASSWORD", "") + os.getenv("DATABASE_URL", "") + "approve").encode()).hexdigest()).encode()
+
+def decision_token(a):
+    """Signed per action, so a link can decide that one action and nothing else."""
+    msg = f"{a['id']}:{int(a['created'])}".encode()
+    return f"{a['id']}.{hmac.new(_alert_secret(), msg, hashlib.sha256).hexdigest()[:24]}"
+
+def _action_for(token):
+    try:
+        aid, sig = token.split(".", 1); a = PENDING.get(int(aid))
+        return a if a and hmac.compare_digest(sig, decision_token(a).split(".", 1)[1]) else None
+    except Exception: return None
+
+def public_url(): return (os.getenv("PUBLIC_URL") or "http://localhost:8000").rstrip("/")
+
+def _preview(p):
+    if p.get("recipients"): return f"{len(p['recipients'])} messages, e.g. to {p['recipients'][0]['to']}: {p['recipients'][0]['subject']}"
+    if p.get("subject"): return f"To {p.get('to')}: {p['subject']}\n\n{(p.get('body') or '')[:600]}"
+    if p.get("subtasks"): return "Subtasks: " + "; ".join(p["subtasks"][:6])
+    if p.get("assignee"): return f"{p.get('title')} -> {p.get('assignee')}"
+    if p.get("text"): return (p["text"] or "")[:600]
+    return json.dumps(p)[:400]
+
+def alert_owner(a):
+    """Tell the owner, on their phone, that an action needs them: by email (test mode: the test inbox) and Telegram when configured.
+    Never blocks the gate; sent from a background thread. Off in DEMO_MODE and with APPROVAL_ALERTS=0."""
+    if demo() or os.getenv("APPROVAL_ALERTS", "1") == "0": return
+    link = f"{public_url()}/a/{decision_token(a)}"
+    agent = AGENT_NAMES.get(AGENT_OF.get(a["cls"]), a["agent"])
+    lead = f"{agent} agent proposes: {a['label']} for {a['who']}."
+    when = "It needs your decision." if a["status"] == "awaiting" else f"It will run at {time.strftime('%H:%M', time.localtime(a['recall_until']))} unless you stop it."
+    body = f"{lead}\n{when}\nWhy you are asked: {a['decision']['why']}\n\n{_preview(a['payload'])}\n\nDecide in one tap:\n{link}\n"
+    subject = f"[Bizzii] {'Needs you' if a['status'] == 'awaiting' else 'Runs soon'}: {a['label']} for {a['who']}"
+    persist.append("alerts", {"id": a["id"], "subject": subject, "link": link})
+    def send():
+        import executors
+        to = (STORE.profile["business"]["owner"].get("email") or os.getenv("TEST_INBOX") or "").strip()
+        if to and email_configured(): executors.send_email({"to": to, "subject": subject, "body": body}, internal=True)
+        if os.getenv("SLACK_WEBHOOK_URL"):
+            import httpx
+            try: httpx.post(os.environ["SLACK_WEBHOOK_URL"], timeout=10, json={"text": f"*{subject}*\n{lead}\n{when}\nWhy: {a['decision']['why']}\n<{link}|Open and decide>"})
+            except Exception as e: print(f"[alerts] slack failed: {type(e).__name__}")
+        tok, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
+        if tok and chat:
+            import httpx
+            base = {"chat_id": chat, "text": f"{subject}\n\n{lead}\n{when}\nWhy: {a['decision']['why']}\n\n{link}"}
+            try:
+                r = httpx.post(f"https://api.telegram.org/bot{tok}/sendMessage", timeout=10, json={**base, "reply_markup": {"inline_keyboard": [[{"text": "Open and decide", "url": link}]]}})
+                if r.status_code != 200: httpx.post(f"https://api.telegram.org/bot{tok}/sendMessage", timeout=10, json=base)   # e.g. a localhost link a button refuses
+            except Exception as e: print(f"[alerts] telegram failed: {type(e).__name__}")
+    if os.getenv("APPROVAL_ALERTS_SYNC") == "1": send()
+    else: threading.Thread(target=send, daemon=True).start()
+
+def _phone_page(title, inner, status=200):
+    css = ("body{font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#fff;color:#0A0A0A}main{max-width:560px;margin:0 auto;padding:22px 18px 40px}"
+           "h1{font:600 24px Georgia,serif;margin:6px 0 4px}.m{color:#737373;font-size:14px}.box{border:1px solid #E5E5E5;border-radius:10px;padding:14px;margin:14px 0;background:#FAFAFA}"
+           "pre{white-space:pre-wrap;font:13px/1.5 ui-monospace,Consolas,monospace;margin:0}button{display:block;width:100%;font:600 16px system-ui;padding:15px;border-radius:10px;margin:10px 0;cursor:pointer;border:1px solid #D4D4D4;background:#fff}"
+           "button.ok{background:#0A0A0A;color:#fff;border-color:#0A0A0A}.why{border-left:3px solid #3D5BC4;padding-left:10px}.done{border-left:3px solid #1C7A5E;padding-left:10px}")
+    return HTMLResponse(f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content=light><title>{_html.escape(title)}</title><style>{css}</style><main><div class=m>Bizzii</div>{inner}</main>", status_code=status)
+
+@app.get("/a/{token}", response_class=HTMLResponse)
+def decide_page(token: str):
+    """What the owner sees when they tap the link on their phone. Opening it changes nothing; only a button does."""
+    a = _action_for(token)
+    if not a: return _phone_page("Link not valid", "<h1>This link is not valid.</h1>", 403)
+    e = _html.escape
+    head = f"<h1>{e(a['label'])}</h1><div class=m>{e(AGENT_NAMES.get(AGENT_OF.get(a['cls']), a['agent']))} agent &middot; for {e(a['who'])}</div>"
+    if a["status"] not in ("awaiting", "recall"):
+        return _phone_page("Already decided", head + f"<p class=done>Already {e(a['status'])}. Nothing more to do.</p>")
+    facts = "".join(f"<li>{e(f)}</li>" for f in a.get("facts", []))
+    mode = "" if os.getenv("SEND_LIVE") == "1" or not os.getenv("TEST_INBOX") else f"<div class=m>Test mode: any email goes to {e(os.getenv('TEST_INBOX'))}.</div>"
+    editable = next((f for f in ("body", "text") if isinstance(a["payload"].get(f), str)), None) if a["status"] == "awaiting" and not a["payload"].get("recipients") else None
+    edit_box = (f"<details><summary class=m>Edit before approving</summary><textarea name=edit_{editable} rows=8 style='width:100%;font:14px system-ui;margin-top:8px;padding:8px;border:1px solid #D4D4D4;border-radius:8px'>"
+                f"{e(a['payload'][editable])}</textarea></details>") if editable else ""
+    promo = ('<button class=ok name=kind value=approve_autonomy>Approve, and let it do these on its own from now on</button>'
+             if a["status"] == "awaiting" and a["decision"].get("promotion") else "")
+    reason = "<input name=reason placeholder='Why? (optional, teaches the agent)' style='width:100%;font:15px system-ui;padding:12px;border:1px solid #D4D4D4;border-radius:10px;margin-top:6px'>"
+    buttons = promo + ('<button class=ok name=kind value=approve>Approve</button>' if a["status"] == "awaiting" else "") + \
+              f'<button name=kind value=preference>{"Stop: " if a["status"] == "recall" else ""}Right, but I&#39;d rather do it myself</button>' + \
+              f'<button name=kind value=quality>{"Stop: " if a["status"] == "recall" else ""}Wrong</button>'
+    when = "" if a["status"] == "awaiting" else f"<p class=m>Runs on its own at {time.strftime('%H:%M', time.localtime(a['recall_until']))} unless you stop it.</p>"
+    return _phone_page(a["label"], head + f"<p class=why><b>Why you are asked:</b> {e(a['decision']['why'])}</p>{when}<div class=box><pre>{e(_preview(a['payload']))}</pre></div>"
+                       + (f"<div class=m>Facts it relied on:</div><ul class=m>{facts}</ul>" if facts else "") + mode + f"<form method=post>{edit_box}{buttons}{reason}</form>")
+
+@app.post("/a/{token}", response_class=HTMLResponse)
+async def decide_from_phone(token: str, request: __import__("fastapi").Request):
+    a = _action_for(token)
+    if not a: return _phone_page("Link not valid", "<h1>This link is not valid.</h1>", 403)
+    form = await request.form(); kind = str(form.get("kind", ""))
+    allow = kind == "approve_autonomy"; kind = "approve" if allow else kind
+    if kind not in ("approve", "preference", "quality"): return _phone_page("Choose", "<h1>Pick one of the buttons.</h1>", 400)
+    edits = {f: str(form.get(f"edit_{f}")) for f in ("body", "text") if form.get(f"edit_{f}") is not None and kind == "approve"}
+    reason = str(form.get("reason") or "")[:300]
+    if a["status"] not in ("awaiting", "recall"): return _phone_page("Already decided", f"<h1>Already {_html.escape(a['status'])}.</h1>")
+    try: done = decision(Decision(id=a["id"], kind=kind, reason=reason, edits=edits, allow_autonomy=allow))
+    except HTTPException as ex: return _phone_page("Not possible", f"<h1>{_html.escape(str(ex.detail))}</h1>", ex.status_code)
+    msg = {"approve": "Approved. " + ("Done, and the result was checked." if done.get("verified") else "Done." if done.get("verified") is None else "It ran, but its check failed."),
+           "preference": "Noted: you will do this one yourself. The agent's competence is not marked down.", "quality": "Noted as wrong. The agent will not do it, and its record shows that."}[kind]
+    extra = (" It may do these on its own from now on, while its record holds." if allow else "") + (" Your edits were sent and the agent will learn from them." if done.get("edited") else "") + \
+            (" Your reason was saved and goes into its next drafts." if reason else "")
+    return _phone_page("Done", f"<h1>{_html.escape(a['label'])}</h1><p class=done>{msg}{extra}</p><p class=m>Recorded in the audit trail.</p>")
+
+# ------------------------------------------------------------------ owner controls: supervision, consent, undo, what the agents were taught
+class Supervision(BaseModel):
+    always_ask_clients: bool = False
+    always_ask_prospects: bool = False
+    always_ask_classes: list[str] = []
+    paused_agents: list[str] = []
+    daily_cap: dict = {}
+    recall_seconds: int | None = None
+
+@app.get("/api/supervision")
+def get_supervision():
+    return {**supervision(), "system_recall_seconds": RECALL_SECS.get("reply_to_client", RECALL_DEFAULT) if demo() else int(os.getenv("RECALL_SECONDS", "600")),
+            "classes": [{"cls": c, "label": LABEL_OF[c], "agent": AGENT_OF[c]} for c in CLASSES], "agents": AGENT_NAMES}
+
+@app.put("/api/supervision")
+def put_supervision(s: Supervision):
+    """Every setting here can only add supervision. Nothing grants autonomy, lowers a threshold or skips the gate."""
+    bad = [c for c in s.always_ask_classes if c not in CLASSES] + [a for a in s.paused_agents + list(s.daily_cap) if a not in AGENT_NAMES]
+    if bad: raise HTTPException(400, f"unknown: {', '.join(bad)}")
+    system = int(os.getenv("RECALL_SECONDS", "600")) if not demo() else RECALL_DEFAULT
+    if s.recall_seconds is not None and s.recall_seconds < system: raise HTTPException(400, f"a recall window can only be lengthened (at least {system} seconds)")
+    caps = {}
+    for k, v in s.daily_cap.items():
+        try: caps[k] = max(0, int(v))
+        except (TypeError, ValueError): raise HTTPException(400, f"daily cap for {k} must be a whole number")
+    rec = {**s.model_dump(), "daily_cap": caps}; persist.put("supervision", rec)
+    persist.append("audit", {"event": "supervision_changed", "id": 0, "cls": "-", "label": "Supervision settings changed", "who": "owner", "agent": "-", "route": "-", "risk": 0, "why": json.dumps(rec)[:300]})
+    return supervision()
+
+class Consent(BaseModel):
+    agent: str
+    cls: str
+    allow: bool
+
+@app.get("/api/consent")
+def consent_view():
+    c = persist.get("consent") or {}
+    out = []
+    for (ag, cls) in list(gate.pairs):
+        ok, why, m = gate.evaluate(ag, cls)
+        if ok or f"{ag}|{cls}" in c:
+            out.append({"agent": ag, "cls": cls, "label": LABEL_OF.get(cls, cls), "earned": ok, "consent": c.get(f"{ag}|{cls}") or "not asked yet"})
+    return {"required": consent_required(), "classes": out}
+
+@app.post("/api/consent")
+def consent_set(x: Consent):
+    """The owner's answer to "let it do these on its own?" Withdrawing is always possible; granting only takes effect while the evidence holds."""
+    if x.cls not in CLASSES: raise HTTPException(400, "unknown action class")
+    set_consent(x.agent, x.cls, "granted" if x.allow else "declined")
+    persist.append("audit", {"event": "autonomy_granted" if x.allow else "autonomy_withheld", "id": 0, "cls": x.cls, "label": LABEL_OF[x.cls], "who": "owner", "agent": x.agent,
+                             "route": "-", "risk": round(risk(x.cls), 2), "why": "owner consent to run without asking" if x.allow else "owner keeps approving these"})
+    return {"agent": x.agent, "cls": x.cls, "consent": consent_of(x.agent, x.cls)}
+
+UNDOABLE = {"assign_subtask", "reassign_stalled_task", "update_task_record", "update_client_record", "flag_relationship_risk", "draft_content", "retain_approved_content", "decompose_project", "identify_project"}
+
+@app.post("/api/actions/{aid}/undo")
+def undo_action(aid: int):
+    """Reverse a reversible action after it ran. The owner overriding it counts against the agent (recorded as an unsuccessful outcome)."""
+    import executors
+    with lock:
+        a = PENDING.get(aid)
+        if not a or a.get("status") != "executed": raise HTTPException(409, "only an action that ran can be undone")
+        if a["cls"] not in UNDOABLE: raise HTTPException(409, "this kind of action cannot be undone (an email, once sent, stays sent)")
+        if time.time() - a.get("executed_at", 0) > float(os.getenv("UNDO_HOURS", "24")) * 3600: raise HTTPException(409, "too late to undo")
+        if not executors.undo(a["cls"], a["payload"]): raise HTTPException(409, "it could not be reversed (it may have changed since)")
+        before = _earned(a["agent"], a["cls"]); a["status"] = "undone"; gate.record_outcome(a["agent"], a["cls"], False); trust_event(a["agent"], a["cls"], "undone", before); audit("undone", a); save()
+        log(f"you undid #{a['id']} ({a['label']}): recorded as unsuccessful")
+        return a
+
+# ------------------------------------------------------------------ train your agents: practice drafts from real data, graded by the owner, never sent
+class Grade(BaseModel):
+    kind: str           # approve | preference | quality
+    reason: str = ""
+
+@app.post("/api/train/start")
+def train_start(agent: str = "", n: int = 4):
+    """Practice proposals built from the business's real records. Grading them gives the gate real owner decisions (A and D) without
+    waiting for live work. Nothing is executed, so no verified outcomes (W) come from practice: the agent still has to deliver for real."""
+    if not STORE.onboarded(): raise HTTPException(409, "complete onboarding first")
+    n = max(1, min(int(n), 10)); want = [agent] if agent else list(AGENT_NAMES)
+    specs = []
+    if "operations" in want:
+        for cl in [x for x in STORE.clients() if x.get("status") != "past"][:n]:
+            e = _client_email(cl); specs.append(dict(agent="operations", cls="followup_client_no_reply", counterparty=cl["id"], who=cl["name"], payload=e,
+                                                     cited=[i for i in (STORE.fid(cl["id"], "client.status"), STORE.fid(cl["id"], "client.last")) if i]))
+    if "marketing" in want:
+        claims = [x["text"] for x in STORE.profile.get("brand", {}).get("permitted_claims", [])] or [STORE.profile["business"].get("description", "")]
+        for t in claims[:min(n, 3)]: specs += agents.marketing_draft(f"Why clients choose us: {t[:80]}")
+    if "project" in want:
+        cl = next((x for x in STORE.clients() if x.get("status") == "active"), None)
+        if cl: specs += [s for s in agents.pm_plan(cl["id"], f"A typical website refresh for {cl['name']}: plan, design, build, review.") if s["cls"] == "assign_subtask"][:n]
+    if "sales" in want:
+        for l in [x for x in leadgen.listing() if x.get("email") and x["status"] in ("new", "enriched", "drafted")][:n]:
+            if not l.get("draft"): leadgen.draft(l["id"])
+            sp = leadgen.proposal_for(l["id"])
+            if sp: specs.append({**sp, "who": l["name"]})
+    items = list(persist.get("practice", []) or [])
+    base = max([x["id"] for x in items] or [0])
+    new = [{"id": base + i + 1, "agent": s["agent"], "cls": s["cls"], "label": LABEL_OF[s["cls"]], "who": s.get("who") or _who(s["counterparty"]),
+            "payload": s["payload"], "facts": [STORE.facts[f]["text"] for f in s.get("cited", []) if f in STORE.facts], "status": "open", "t": time.time()} for i, s in enumerate(specs)]
+    persist.put("practice", (items + new)[-200:])
+    return {"created": len(new), "items": new}
+
+@app.get("/api/train")
+def train_list():
+    items = persist.get("practice", []) or []
+    graded = [x for x in items if x["status"] != "open"]
+    return {"open": [x for x in items if x["status"] == "open"], "graded": len(graded),
+            "by_kind": {k: sum(1 for x in graded if x["status"] == k) for k in ("approve", "preference", "quality")}}
+
+@app.post("/api/train/{pid}")
+def train_grade(pid: int, g: Grade):
+    if g.kind not in ("approve", "preference", "quality"): raise HTTPException(400, "bad kind")
+    items = list(persist.get("practice", []) or []); it = next((x for x in items if x["id"] == pid), None)
+    if not it or it["status"] != "open": raise HTTPException(409, "not open")
+    with lock:
+        before = _earned(it["agent"], it["cls"]); gate.record_decision(it["agent"], it["cls"], g.kind); trust_event(it["agent"], it["cls"], f"practice_{g.kind}", before); save()
+    if g.reason: learning.add_reason(it["agent"], it["cls"], g.kind, g.reason)
+    it["status"] = g.kind; persist.put("practice", items)
+    persist.append("audit", {"event": f"practice_{g.kind}", "id": 0, "cls": it["cls"], "label": it["label"], "who": it["who"], "agent": it["agent"], "route": "practice",
+                             "risk": round(risk(it["cls"]), 2), "why": "graded in training (not executed)" + (f": {g.reason[:200]}" if g.reason else "")})
+    ok, why, m = gate.evaluate(it["agent"], it["cls"])
+    return {"id": pid, "status": g.kind, "A": round(m["A"], 3), "D": round(m["D"], 3), "earned": ok, "why": why}
+
+# ------------------------------------------------------------------ proof: trust over time, impact, what the guardrail stopped
+@app.get("/api/trust/history")
+def trust_history(agent: str = "", cls: str = "", n: int = 300):
+    ev = list(reversed(persist.tail("trust_events", 600)))
+    return [e for e in ev if (not agent or e["agent"] == agent) and (not cls or e["cls"] == cls)][-min(n, 600):]
+
+MINUTES = {"reply_to_client": 6, "followup_client_no_reply": 5, "reply_to_enquiry": 6, "send_lead_outreach": 8, "send_lead_followup": 5, "record_correspondence_fact": 3,
+           "flag_relationship_risk": 4, "update_client_record": 2, "read_attached_document": 4, "notify_owner_unread_file": 1, "assign_subtask": 4, "decompose_project": 15,
+           "reassign_stalled_task": 4, "notify_teammate_assignment": 2, "identify_project": 5, "draft_content": 20, "retain_approved_content": 1, "update_brand_record": 3}
+
+@app.get("/api/impact")
+def impact():
+    acts = list(PENDING.values())
+    done = [a for a in acts if a.get("status") == "executed"]
+    alone = [a for a in done if a["decision"]["route"] in ("auto", "recall")]
+    decided = [a for a in acts if a.get("decided_at")]
+    per = lambda a: MINUTES.get(a["cls"], 3) * max(1, len(a["payload"].get("recipients", [])) or 1)
+    saved = sum(per(a) for a in done); review = round(0.5 * len(decided), 1)
+    return {"proposed": len(acts), "done": len(done), "ran_alone": len(alone), "owner_decisions": len(decided),
+            "blocked": sum(1 for a in acts if a.get("status") == "refused"), "expired": sum(1 for a in acts if a.get("status") == "expired"),
+            "minutes_saved_estimate": max(0, round(saved - review)), "owner_review_minutes": review,
+            "share_alone": round(len(alone) / len(done), 2) if done else 0.0, "note": "minutes are an estimate per kind of action, not a measurement"}
+
+def _blocked_kind(why):
+    w = why.lower()
+    return ("another client's facts" if "outside this" in w else "wrong recipient" if "not on record" in w else "unrecorded price or date" if "which no cited fact records" in w
+            else "no basis cited" if "cites no facts" in w else "agent paused" if "paused" in w else "not set up" if "onboarding" in w else "agent inactive" if "inactive" in w else "guardrail")
+
+@app.get("/api/blocked")
+def blocked():
+    rows = sorted((a for a in PENDING.values() if a.get("status") == "refused"), key=lambda a: -a["id"])[:50]
+    return [{"id": a["id"], "t": time.strftime("%Y-%m-%d %H:%M", time.localtime(a["created"])), "agent": a["agent"], "label": a["label"], "who": a["who"],
+             "kind": _blocked_kind(a["decision"]["why"]), "why": a["decision"]["why"]} for a in rows]
+
+# ------------------------------------------------------------------ the owner's daily digest
+def send_digest():
+    import executors
+    if not STORE.onboarded(): return {"skipped": "not onboarded"}
+    since = time.time() - 86400
+    waiting = [a for a in PENDING.values() if a.get("status") in ("awaiting", "recall")]
+    done = [a for a in PENDING.values() if a.get("status") == "executed" and a.get("executed_at", 0) >= since]
+    stopped = [a for a in PENDING.values() if a.get("status") == "refused" and a["created"] >= since]
+    changes = [e for e in persist.tail("trust_events", 300) if e.get("change")][:10]
+    im = impact()
+    lines = [f"Bizzii for {STORE.profile['business']['name']}: the last 24 hours", "",
+             f"Done: {len(done)} ({sum(1 for a in done if a['decision']['route'] in ('auto', 'recall'))} on their own). Stopped by the guardrail: {len(stopped)}. Estimated time saved so far: {im['minutes_saved_estimate']} minutes.", ""]
+    lines += [f"Waiting on you ({len(waiting)}):"] + [f"- {a['label']} for {a['who']}: {public_url()}/a/{decision_token(a)}" for a in waiting[:15]] + [""]
+    if changes: lines += ["Trust changes:"] + [f"- {AGENT_NAMES.get(e['agent'], e['agent'])} {e['change']} '{LABEL_OF.get(e['cls'], e['cls'])}'" for e in changes] + [""]
+    to = (STORE.profile["business"]["owner"].get("email") or os.getenv("TEST_INBOX") or "").strip()
+    ok = bool(to) and email_configured() and executors.send_email({"to": to, "subject": f"[Bizzii] Your day: {len(waiting)} waiting, {len(done)} done", "body": "\n".join(lines)}, internal=True)
+    SCHED["last_digest"] = time.strftime("%Y-%m-%d %H:%M")
+    return {"sent": bool(ok), "to": to, "waiting": len(waiting), "done": len(done), "blocked": len(stopped)}
+
+@app.post("/api/digest/send")
+def digest_send():
+    r = send_digest()
+    if not r.get("sent") and not r.get("skipped"): raise HTTPException(409, "no mailbox configured or no owner address")
+    return r
+
+@app.get("/api/learning")
+def learning_view(): return learning.summary()
+
+@app.get("/api/alerts")
+def alerts_view(): return persist.tail("alerts", 30)
+
 # ------------------------------------------------------------------ pages
 def _page(name): return FileResponse(WEB / name, media_type="text/html")
 @app.get("/", response_class=HTMLResponse)
@@ -531,7 +1126,23 @@ def agents_page(): return _page("agents.html")
 @app.get("/leads", response_class=HTMLResponse)
 def leads_page(): return _page("leads.html")
 
-@app.on_event("startup")
 def boot():
-    _reset_gate(True)
+    G.AUDIT_RATE = float(os.getenv("AUDIT_RATE", "0" if demo() else "0.1"))
+    if demo():
+        _reset_gate(True)
+    else:
+        n_pairs, n_open = load_state()
+        if os.getenv("SEED_HISTORY") == "1" and not gate.pairs:
+            with lock: _seed(); META["seeded"] = True; save()
+            log("SEED_HISTORY=1: a labelled starting history was loaded once into the empty evidence store")
+        log(f"real mode: loaded evidence for {len(gate.pairs)} agent/action pairs and {n_open} actions waiting on the owner")
     inbox.start_background(process_inbound)
+    start_scheduler()
+
+# ------------------------------------------------------------------ Bizzii as an MCP server: the trust layer for any AI agent (see trust_mcp.py)
+import trust_mcp
+from mcp.server.transport_security import TransportSecuritySettings
+MCP = trust_mcp.build(sys.modules[__name__])
+# stateless JSON responses work cleanly behind the onboarding app's proxy; access is controlled by the login in front of everything
+app.mount("/", MCP.streamable_http_app(streamable_http_path="/mcp", json_response=True, stateless_http=True,
+                                       transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)))

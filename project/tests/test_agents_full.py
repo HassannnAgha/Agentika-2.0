@@ -23,9 +23,9 @@ def test_message_facts_become_memory_only_after_the_owner_approves():
     r = inbound("omar@meridian.example", "Board meeting", "Hi. The board meeting is on 14 November. Our budget is agreed at PKR 450,000 for the refresh.")
     rec = next(x for x in r if x["cls"] == "record_correspondence_fact")
     assert rec["route"] == "approval" and rec["payload"]["facts"]
-    before = len(facts()); assert not any("450,000" in f["text"] for f in facts())
+    before = len(facts()); assert not any("450,000" in f["text"] and f["kind"] == "client.fact" for f in facts())   # the message itself is on record; its facts are not yet
     done = approve(rec["id"]); assert done["verified"] is True
-    mine = [f for f in facts() if "450,000" in f["text"]]
+    mine = [f for f in facts() if "450,000" in f["text"] and f["kind"] == "client.fact"]
     assert mine and mine[0]["owner"] == "cl-1" and len(facts()) > before     # owned by that client, so only that client's mail may cite it
 
 def test_readable_attachment_is_read_and_its_facts_recorded():

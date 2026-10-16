@@ -1,14 +1,16 @@
 import 'server-only';
 import mammoth from 'mammoth';
 import Papa from 'papaparse';
+import { extractText, getDocumentProxy } from 'unpdf';
 import { extractJSON, ExtractionError } from './gemini';
 import { COMPANY_DOC, CSV_MAPPING, FILE_KIND, RESUME } from './schemas';
 
 /**
  * Turns one uploaded file into onboarding records.
  *
- * PDFs go to Gemini as they are, so layout and scanned pages are read too.
- * Word files are reduced to text first. Spreadsheets cost one call however
+ * PDFs with a text layer (almost every CV and company profile) are reduced to text first, so they can be read by Gemini or,
+ * when Gemini is busy or out of quota, by the Groq fallback. Only a scanned PDF with no text goes to Gemini as the file
+ * itself, since only Gemini can read the page images. Word files are reduced to text first. Spreadsheets cost one call however
  * long they are: Gemini only names the columns, and the rows are read here.
  * Nothing is written to disk.
  */
@@ -63,11 +65,26 @@ function typeOf(file) {
 async function partsFor(file, kind) {
   const buf = Buffer.from(await file.arrayBuffer());
   const marker = { text: `=== FILE: ${file.name} ===` };
-  if (kind === 'pdf') return { parts: [marker, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }], bytes: buf.length };
+  if (kind === 'pdf') {
+    const text = await pdfText(buf);
+    if (text.trim().length >= 120) return { parts: [marker, { text: text.slice(0, 60_000) }], bytes: Math.min(text.length, 60_000) };
+    return { parts: [marker, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }], bytes: buf.length }; // scanned: Gemini only
+  }
   const text = kind === 'docx' ? (await mammoth.extractRawText({ buffer: buf })).value : buf.toString('utf8');
   if (text.trim().length < 40) throw new ExtractionError('The file has almost no readable text.', { status: 422 });
   const body = text.slice(0, 60_000);
   return { parts: [marker, { text: body }], bytes: body.length };
+}
+
+/** The PDF's text layer, or '' for a scanned PDF (or one that cannot be opened). */
+async function pdfText(buf) {
+  try {
+    const pdf = await getDocumentProxy(new Uint8Array(buf));
+    const { text } = await extractText(pdf, { mergePages: true });
+    return String(text || '');
+  } catch {
+    return '';
+  }
 }
 
 function toResult(entry) {
@@ -101,16 +118,29 @@ async function readDocuments(docs) {
 
   await Promise.all(
     batches.map(async (batch) => {
+      const missed = [];
       try {
         const res = await extractJSON({ parts: batch.flatMap((d) => d.parts), schema: BATCH_SCHEMA, task: TASK });
         const entries = res.files || [];
         batch.forEach((d, i) => {
           // match by name, falling back to position when the model shortens a name
           const entry = entries.find((x) => x.name === d.file.name) ?? (entries.length === batch.length ? entries[i] : null);
-          out.set(d.file.name, entry ? toResult(entry) : new ExtractionError('This file was not read. Try it again on its own.'));
+          if (entry) out.set(d.file.name, toResult(entry));
+          else missed.push(d);
         });
       } catch (e) {
-        for (const d of batch) out.set(d.file.name, e);
+        if (batch.length === 1) out.set(batch[0].file.name, e);
+        else missed.push(...batch);
+      }
+      // anything the batch did not account for is read again on its own (smaller requests succeed where a batch did not)
+      for (const d of missed) {
+        try {
+          const res = await extractJSON({ parts: d.parts, schema: BATCH_SCHEMA, task: TASK });
+          const entry = (res.files || [])[0];
+          out.set(d.file.name, entry ? toResult(entry) : new ExtractionError('This file could not be read.'));
+        } catch (e) {
+          out.set(d.file.name, e);
+        }
       }
     }),
   );

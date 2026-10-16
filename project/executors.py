@@ -32,6 +32,11 @@ def unsub_verify(token):
     except Exception: return None
 def unsub_url(email): return f"{(os.getenv('PUBLIC_URL') or 'http://localhost:8000').rstrip('/')}/u/{unsub_token(email)}"
 
+def _thread(m, p):
+    """A reply carries the original message's id, so it lands in the same thread in the recipient's mail client."""
+    mid = (p.get("reply_to_message_id") or "").strip()
+    if mid.startswith("<") and mid.endswith(">"): m["In-Reply-To"] = mid; m["References"] = mid
+
 # ---------------------------------------------------------------- email
 def business_identity():
     """Name and postal address for the footer, from what the owner entered in onboarding (a custom field on the Business step whose label
@@ -60,7 +65,7 @@ def send_email(p, internal=False):
             rec["error"] = why; persist.append("outbox", rec); return False
         body = p.get("body", "") if internal else f"{p.get('body','')}\n\n--\n{biz}, {addr}\nDo not want to hear from us? {unsub_url(to)}"
         try:
-            m = EmailMessage(); m["From"] = os.getenv("SMTP_USER"); m["To"] = to; m["Subject"] = p.get("subject", ""); m.set_content(body)
+            m = EmailMessage(); m["From"] = os.getenv("SMTP_USER"); m["To"] = to; m["Subject"] = p.get("subject", ""); m.set_content(body); _thread(m, p)
             if not internal: m["List-Unsubscribe"] = f"<{unsub_url(to)}>"; m["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
             with smtplib.SMTP_SSL(os.environ["SMTP_HOST"], int(os.getenv("SMTP_PORT", "465")), context=ssl.create_default_context(), timeout=20) as s:
                 s.login(os.environ["SMTP_USER"], os.getenv("SMTP_PASSWORD", "")); s.send_message(m)
@@ -74,7 +79,7 @@ def send_email(p, internal=False):
     if host and inbox and not _fail():
         try:
             m = EmailMessage(); m["From"] = os.getenv("SMTP_USER", inbox); m["To"] = inbox
-            m["Subject"] = f"[TEST for {p.get('to')}] {p.get('subject','')}"; m.set_content(p.get("body", ""))
+            m["Subject"] = f"[TEST for {p.get('to')}] {p.get('subject','')}"; m.set_content(p.get("body", "")); _thread(m, p)
             with smtplib.SMTP_SSL(host, int(os.getenv("SMTP_PORT", "465")), context=ssl.create_default_context(), timeout=15) as s:
                 s.login(os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASSWORD", "")); s.send_message(m)
             rec["delivered_to"] = inbox
@@ -103,7 +108,7 @@ def _task(p):
     row = {"id": len(tasks) + 1, "title": p.get("title") or p.get("task"), "assignee": p.get("assignee"), "due": p.get("due"), "client": p.get("client", ""),
            "client_id": p.get("client_id", ""), "hours": p.get("hours", 8), "reason": p.get("reason"), "status": "open", "created": now, "updated": now}
     if _fail(): return False
-    tasks.append(row); persist.put("tasks", tasks)
+    tasks.append(row); persist.put("tasks", tasks); p["_task_id"] = row["id"]
     return any(t["id"] == row["id"] and t["title"] == row["title"] and t["assignee"] == row["assignee"] for t in persist.get("tasks", []))
 
 def _reassign(p):
@@ -120,23 +125,23 @@ def _task_status(p):
     tasks = list(persist.get("tasks", []))
     t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
     if not t or _fail(): return False
-    t["status"], t["updated"] = p.get("status", t["status"]), time.time(); persist.put("tasks", tasks)
+    p["_status_was"] = t["status"]; t["status"], t["updated"] = p.get("status", t["status"]), time.time(); persist.put("tasks", tasks)
     return next((x for x in persist.get("tasks", []) if x["id"] == p.get("task_id")), {}).get("status") == p.get("status")
 
 def _project(p):
     """decompose_project: attach the subtasks to the project already identified for this client, or record a new one."""
     ps = list(persist.get("projects", []))
     open_ = next((x for x in reversed(ps) if x.get("client_id") == p.get("client_id") and not x.get("subtasks")), None)
-    if open_: open_["subtasks"] = p.get("subtasks", []); row = open_
+    if open_: p["_subtasks_was"] = open_.get("subtasks", []); open_["subtasks"] = p.get("subtasks", []); row = open_
     else:
         row = {"id": len(ps) + 1, "name": p.get("project"), "client": p.get("client", ""), "client_id": p.get("client_id", ""), "subtasks": p.get("subtasks", [])}; ps.append(row)
-    persist.put("projects", ps)
+    persist.put("projects", ps); p["_project_id"] = row["id"]
     return any(x["id"] == row["id"] and x.get("subtasks") == p.get("subtasks", []) for x in persist.get("projects", []))
 
 def _identify_project(p):
     """Owner confirmed this is new work: it becomes a project (planning is chained by the server)."""
     ps = list(persist.get("projects", [])); row = {"id": len(ps) + 1, "name": p.get("project"), "client": p.get("client", ""), "client_id": p.get("client_id", ""), "subtasks": [], "brief": p.get("summary", "")}
-    ps.append(row); persist.put("projects", ps)
+    ps.append(row); persist.put("projects", ps); p["_project_id"] = row["id"]
     return any(x["id"] == row["id"] for x in persist.get("projects", []))
 
 # ---------------------------------------------------------------- memory and records
@@ -150,6 +155,8 @@ def _read_doc(p):
     return any(r.get("name") == p.get("name") for r in persist.tail("documents_read", 5))
 
 def _client_update(p):
+    c = STORE.client(p["client"]) or {}
+    p["_was"] = c.get("contact", {}).get("email") if p["field"] == "contact.email" else c.get("contact", {}).get("name") if p["field"] == "contact.name" else c.get(p["field"])
     done = STORE.update_client(p["client"], p["field"], p["value"])
     if p["field"] == "contact.email": return done and (STORE.client(p["client"]) or {}).get("contact", {}).get("email") == p["value"]
     return done
@@ -157,16 +164,16 @@ def _client_update(p):
 def _crm(p):
     crm = dict(persist.get("crm", {})); key = p.get("client", "unknown")
     if _fail(): return False
-    crm.setdefault(key, {})[p.get("field", "note")] = p.get("value"); persist.put("crm", crm)
+    p["_crm_was"] = crm.get(key, {}).get(p.get("field", "note")); crm.setdefault(key, {})[p.get("field", "note")] = p.get("value"); persist.put("crm", crm)
     return persist.get("crm", {}).get(key, {}).get(p.get("field", "note")) == p.get("value")
 
 # ---------------------------------------------------------------- marketing
 def _save_draft(p):
-    d = list(persist.get("drafts", [])); row = {"id": len(d) + 1, **p}; d.append(row); persist.put("drafts", d)
+    d = list(persist.get("drafts", [])); row = {"id": len(d) + 1, **p}; d.append(row); persist.put("drafts", d); p["_draft_id"] = row["id"]
     return any(x["id"] == row["id"] for x in persist.get("drafts", []))
 
 def _retain(p):
-    r = list(persist.get("retained", [])); row = {"id": len(r) + 1, **p}; r.append(row); persist.put("retained", r)
+    r = list(persist.get("retained", [])); row = {"id": len(r) + 1, **p}; r.append(row); persist.put("retained", r); p["_retained_id"] = row["id"]
     return any(x["id"] == row["id"] for x in persist.get("retained", []))
 
 def _brand(p):
@@ -174,6 +181,42 @@ def _brand(p):
     STORE.update_brand(c.get("voice"), c.get("positioning"), c.get("add_permitted"), c.get("add_prohibited"))
     b = STORE.profile.get("brand", {}); have = {x["text"].strip().lower() for x in b.get("permitted_claims", []) + b.get("prohibited_claims", [])}
     return all(t.strip().lower() in have for t in (c.get("add_permitted") or []) + (c.get("add_prohibited") or [])) and (not c.get("voice") or b.get("voice") == c["voice"])
+
+# ---------------------------------------------------------------- undo (reversible actions only)
+def _drop(key, rid):
+    rows = list(persist.get(key, []) or []); keep = [x for x in rows if x.get("id") != rid]
+    if len(keep) == len(rows): return False
+    persist.put(key, keep); return True
+
+def undo(cls, p):
+    """Reverse what an executor did, using what it remembered. Returns True only if the record is back as it was."""
+    try:
+        if cls == "assign_subtask": return _drop("tasks", p.get("_task_id"))
+        if cls == "reassign_stalled_task":
+            tasks = list(persist.get("tasks", []) or []); t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
+            if not t or t.get("assignee") != p.get("to"): return False
+            t["assignee"], t["updated"] = p.get("from"), time.time(); persist.put("tasks", tasks); return True
+        if cls == "update_task_record":
+            tasks = list(persist.get("tasks", []) or []); t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
+            if not t or "_status_was" not in p: return False
+            t["status"] = p["_status_was"]; persist.put("tasks", tasks); return True
+        if cls == "update_client_record": return "_was" in p and STORE.update_client(p["client"], p["field"], p["_was"])
+        if cls == "flag_relationship_risk":
+            crm = dict(persist.get("crm", {}) or {}); rec = dict(crm.get(p.get("client", "unknown"), {}))
+            if p.get("_crm_was") is None: rec.pop(p.get("field", "note"), None)
+            else: rec[p.get("field", "note")] = p["_crm_was"]
+            crm[p.get("client", "unknown")] = rec; persist.put("crm", crm); return True
+        if cls == "draft_content": return _drop("drafts", p.get("_draft_id"))
+        if cls == "retain_approved_content": return _drop("retained", p.get("_retained_id"))
+        if cls == "identify_project": return _drop("projects", p.get("_project_id"))
+        if cls == "decompose_project":
+            ps = list(persist.get("projects", []) or []); row = next((x for x in ps if x["id"] == p.get("_project_id")), None)
+            if not row: return False
+            if "_subtasks_was" in p: row["subtasks"] = p["_subtasks_was"]; persist.put("projects", ps); return True
+            return _drop("projects", row["id"])
+    except Exception:
+        return False
+    return False
 
 def _publish(p):
     # The system never places content anywhere itself (FYP scope). Hackathon demo: the post is held, not sent.

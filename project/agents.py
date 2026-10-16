@@ -11,7 +11,7 @@ shared memory (as in the FYP design) and must cite fact ids; the guardrail, not 
   Sales       : discovery, scoring, drafts and batch campaigns live in leadgen.py; enquiries arrive through ops_inbound"""
 import re, json, time, hashlib, datetime
 from store import STORE
-import llm, docs_text, persist
+import llm, docs_text, persist, learning
 
 FREE_MAIL = ("gmail.", "yahoo.", "hotmail.", "outlook.", "icloud.", "proton", "live.", "aol.")
 UPSET = ("unhappy", "disappointed", "frustrat", "delay", "late ", "cancel", "refund", "complain", "not happy", "unacceptable", "still waiting")
@@ -61,14 +61,15 @@ def extract_facts(who: str, sources: list) -> list:
                 facts.append(f"{label}: {s[:200]}")
     return list(dict.fromkeys(facts))[:6]
 
-def ops_inbound(sender: str, subject: str, body: str, attachments=()) -> list:
+def ops_inbound(sender: str, subject: str, body: str, attachments=(), message_id: str = "") -> list:
     c = _client_for(sender)
     cp = c["id"] if c else "enq-" + hashlib.sha1(sender.lower().encode()).hexdigest()[:6]
     who = c["name"] if c else sender
     reply_agent, reply_cls = ("operations", "reply_to_client") if c else ("sales", "reply_to_enquiry")   # an enquirer wrote first: not unsolicited
     today = datetime.date.today().isoformat()
     # the message itself becomes a recorded fact, so everything proposed from it can cite where it came from
-    msg = STORE.add_fact(cp, "message", f"Message received {today} from {sender}: {subject or '(no subject)'}", source="inbound email")
+    # (an excerpt of what they wrote is kept, so a reply may repeat a date or amount the sender themselves stated)
+    msg = STORE.add_fact(cp, "message", f"Message received {today} from {sender}: {subject or '(no subject)'}. They wrote: {' '.join(body.split())[:600]}", source="inbound email")
 
     side, read_docs, unread = [], [], []
     for att in attachments or []:
@@ -110,8 +111,9 @@ def ops_inbound(sender: str, subject: str, body: str, attachments=()) -> list:
         if llm.available():
             out = llm.json_call(
                 f"You are the {reply_agent} agent for {_biz()['name']}. Draft a short, polite reply to the message. Cite by id every memory fact you rely on. "
-                "Never state a price, date or promise that is not in a cited fact. Never write fact ids or numbers in brackets in the text. Also say whether the sender sounds upset. "
-                'Return {"subject":str,"body":str,"cited":[ints],"upset":bool,"upset_reason":str}.',
+                "Never state a price, date or promise that is not in a cited fact. Never write fact ids or numbers in brackets in the text. Also say whether the sender sounds upset, "
+                "and how confident you are that this reply is right and complete (0 to 1), naming anything you are unsure about. "
+                'Return {"subject":str,"body":str,"cited":[ints],"upset":bool,"upset_reason":str,"confidence":number,"unsure_about":str}.\n' + learning.guidance(reply_agent, reply_cls),
                 json.dumps({"you_are_replying_as": _sig(), "message": {"from": sender, "subject": subject, "body": body}, "shared_memory": _memory()}))
             if not (out and out.get("subject") and out.get("body")): out = None
             else: out["subject"], out["body"] = llm.strip_citations(out["subject"], set(STORE.facts)), llm.strip_citations(out["body"], set(STORE.facts))
@@ -128,8 +130,13 @@ def ops_inbound(sender: str, subject: str, body: str, attachments=()) -> list:
             who_to = c["contact"]["name"] if c else "there"
             out = {"subject": ("Re: " + subject) if subject else "Re: your message",
                    "body": f"Hi {who_to},\n\nThanks for getting in touch. We have your message and will come back to you shortly.\n\n{_sig()}"}
+        conf, unsure = out.get("confidence"), out.get("unsure_about") or ""
+        if note.startswith("template"):                 # the template cannot answer a question about money or timing: it says so instead of guessing
+            asks = "?" in body and any(w in body.lower() for w in ("price", "cost", "quote", "how much", "when", "date", "deadline", "available", "budget"))
+            conf, unsure = (0.4, "the message asks something only you can answer") if asks else (None, "")
         props.append(dict(agent=reply_agent, cls=reply_cls, counterparty=cp, cited=cited, who=who,
-                          payload={"to": sender, "subject": out["subject"], "body": out["body"], "draft_by": note, "in_reply_to": subject}))
+                          payload={"to": sender, "subject": out["subject"], "body": out["body"], "draft_by": note, "in_reply_to": subject, "reply_to_message_id": message_id,
+                                   **({"confidence": conf} if conf is not None else {}), **({"unsure": unsure} if unsure else {})}))
         if c and upset:
             props.append(dict(agent="operations", cls="flag_relationship_risk", counterparty=cp, cited=[msg] + _ids(cp, "client.status", "client.last"), who=who,
                               payload={"client": cp, "field": "risk", "value": why or "message sounds unhappy"}))
@@ -250,7 +257,9 @@ def marketing_draft(topic: str, channel: str = "linkedin") -> list:
     def ask(extra=""):
         out = llm.json_call(
             f"You draft a short {channel} post for a small business in its recorded voice. Use ONLY the permitted claims given; never make a prohibited claim; "
-            'no prices, dates, results, superlatives or client names. Never write fact ids or numbers in brackets in the text. ' + extra + 'Return {"title":str,"text":str,"claims_used":[claim ids]}.',
+            'no prices, dates, results, superlatives or client names. Never write fact ids or numbers in brackets in the text. ' + extra +
+            'Say how confident you are (0 to 1) that the post is on-brand and makes only permitted claims. Return {"title":str,"text":str,"claims_used":[claim ids],"confidence":number,"unsure_about":str}.\n'
+            + learning.guidance("marketing", "draft_content"),
             json.dumps({"topic": topic, "voice": brand.get("voice", ""), "positioning": brand.get("positioning", ""), "permitted_claims": claims, "prohibited_claims": never}))
         if out and out.get("text"): out["text"] = llm.strip_citations(out["text"], set(STORE.facts)); return out
         return None
@@ -269,7 +278,9 @@ def marketing_draft(topic: str, channel: str = "linkedin") -> list:
         out = {"title": topic[:60], "text": f"{topic}\n\n" + " ".join(claims[i] for i in used) + f"\n\n{_biz()['name']}"}; check = claims_check(out["text"])
     return [dict(agent="marketing", cls="draft_content", counterparty="business", cited=_ids("business", "biz.positioning") + used, who=_biz()["name"],
                  payload={"topic": topic, "channel": channel, "title": out.get("title", topic), "text": out["text"], "draft_by": how,
-                          "claims_check": check or "clean", "revised": retried})]
+                          "claims_check": check or "clean", "revised": retried,
+                          **({"confidence": out["confidence"]} if isinstance(out.get("confidence"), (int, float)) else {}),
+                          **({"unsure": out["unsure_about"]} if out.get("unsure_about") else {})})]
 
 def marketing_publish(text: str, channel: str = "linkedin") -> list:
     return [dict(agent="marketing", cls="publish_post", counterparty="business", cited=_ids("business", "biz.summary", "biz.positioning"), who=_biz()["name"],

@@ -3,13 +3,28 @@
 Every fact has an id and an owner: a client id, a lead id, or "business". The gate refuses any proposal that
 cites a fact whose owner is neither the counterparty nor the business. Profile facts are rebuilt whenever the
 profile changes (ids 1..9999); lead facts are added by lead gen (ids 10000+) and survive profile changes."""
-import threading, datetime
+import os, threading, datetime
 import persist
 from catalogue import AGENT_NEEDS
 
 DATA = persist.DATA
 LEAD_BASE = 10000
 lock = threading.RLock()
+
+def demo() -> bool:
+    """DEMO_MODE=1: sample business, seeded history, scenario buttons. Anything else is the real system."""
+    return os.getenv("DEMO_MODE") == "1"
+
+def empty_profile():
+    """Real mode before onboarding: no business is recorded, so every agent's proposal is refused until onboarding is done."""
+    return {"fixture_version": 2, "source": "empty",
+            "business": {"name": "", "category": "", "description": "", "team_size": 0, "timezone": "Asia/Karachi", "working_days": [],
+                         "working_hours": {"start": "", "end": ""}, "owner": {"name": "", "email": ""}, "custom": []},
+            "team": [], "clients": [], "brand": {"voice": "", "positioning": "", "permitted_claims": [], "prohibited_claims": [], "custom": []},
+            "connections": {}, "take_up": []}
+
+def email_configured() -> bool:
+    return bool(os.getenv("SMTP_HOST") and os.getenv("SMTP_USER") and os.getenv("SMTP_PASSWORD"))
 
 def _ago(days): return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
 
@@ -39,10 +54,19 @@ def demo_profile():
     }
 
 def agent_status(profile):
+    """Which agents can act. A connection the owner declined in onboarding always makes its agents inactive. In real mode the
+    email connection is the actual mailbox configuration (SMTP), not the onboarding consent screen; the task tool is Bizzii's
+    own task board and is always available. In demo mode the onboarding statuses are taken as given."""
     conn = profile.get("connections", {})
     out = {}
     for a, needs in AGENT_NEEDS.items():
-        missing = [n for n in needs if conn.get(n, {}).get("status") != "connected"]
+        missing = []
+        for n in needs:
+            st = conn.get(n, {}).get("status")
+            if st == "declined": missing.append(f"{n} was declined in onboarding")
+            elif demo():
+                if st != "connected": missing.append(f"{n} not connected")
+            elif n == "email" and not email_configured(): missing.append("no mailbox configured (set SMTP_HOST, SMTP_USER, SMTP_PASSWORD)")
         out[a] = {"active": not missing, "missing": missing}
     return out
 
@@ -54,7 +78,7 @@ class Store:
     # ---- persistence
     def load(self):
         with lock:
-            self.profile = persist.get("profile") or demo_profile()
+            self.profile = persist.get("profile") or (demo_profile() if demo() else empty_profile())
             d = persist.get("lead_facts") or {}
             self.lead_facts = {int(k): v for k, v in d.items()}
             self._next_lead = max([LEAD_BASE - 1, *self.lead_facts]) + 1
@@ -67,7 +91,7 @@ class Store:
 
     def reset_demo(self):
         with lock:
-            persist.delete("profile"); self.profile = demo_profile(); self._rebuild()
+            persist.delete("profile"); self.profile = demo_profile() if demo() else empty_profile(); self._rebuild()
 
     # ---- facts
     def _rebuild(self):
@@ -130,6 +154,9 @@ class Store:
             if x["owner"] == owner and x["kind"] == kind: return i
     def of(self, owner): return {i: x for i, x in self.facts.items() if x["owner"] == owner}
     def allowed_for(self, counterparty): return {i for i, x in self.facts.items() if x["owner"] in (counterparty, "business")}
+
+    def onboarded(self) -> bool:
+        return self.profile.get("source") != "empty" and bool(self.profile.get("business", {}).get("name"))
 
     # ---- lookups used by agents
     def clients(self): return self.profile.get("clients", [])

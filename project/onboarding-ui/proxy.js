@@ -10,7 +10,8 @@ import { NextResponse } from 'next/server';
  *   APP_PASSWORD unset, SEND_LIVE=1    -> refuses every request: live sending is never reachable without a login
  *   APP_PASSWORD set                   -> HTTP Basic auth
  *
- * Left open on purpose: /u/* (the unsubscribe link a recipient clicks, signed so it can only opt out their own address)
+ * Left open on purpose: /u/* (the unsubscribe link a recipient clicks, signed so it can only opt out their own address),
+ * /a/* (the owner's one-tap decision link, signed per action so it can decide that one action and nothing else)
  * and /health (the platform's health check, returns nothing sensitive).
  */
 const same = (a, b) => {
@@ -40,5 +41,5 @@ export function proxy(request) {
 }
 
 export const config = {
-  matcher: ['/((?!u/|health$|_next/static|_next/image|favicon\\.ico).*)'],
+  matcher: ['/((?!u/|a/|health$|_next/static|_next/image|favicon\\.ico).*)'],
 };

@@ -9,6 +9,9 @@ import { useOnboarding } from './state';
  * into the onboarding record. Progress is kept on the record itself
  * (profile.imports) so it survives moving between screens.
  */
+const TOO_LONG = 'Reading took too long, usually because the AI service is busy. Try again in a minute, or fill the screens in by hand.';
+const failure = (e) => (e?.name === 'TimeoutError' || e?.name === 'AbortError' ? TOO_LONG : e.message);
+
 export function useImporter() {
   const { apply } = useOnboarding();
 
@@ -25,6 +28,7 @@ export function useImporter() {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ url }),
+          signal: AbortSignal.timeout(120_000),
         });
         const data = await res.json().catch(() => ({ error: 'The server sent an unreadable reply.' }));
         if (!res.ok) throw new Error(data.error || `Failed (${res.status}).`);
@@ -47,7 +51,7 @@ export function useImporter() {
           },
         }));
       } catch (e) {
-        setImports((im) => ({ ...im, website: { url, status: 'failed', error: e.message } }));
+        setImports((im) => ({ ...im, website: { url, status: 'failed', error: failure(e) } }));
       }
     },
     [apply, setImports],
@@ -70,7 +74,7 @@ export function useImporter() {
       try {
         const body = new FormData();
         for (const f of files) body.append('files', f);
-        const res = await fetch('/api/onboarding/files', { method: 'POST', body });
+        const res = await fetch('/api/onboarding/files', { method: 'POST', body, signal: AbortSignal.timeout(180_000) });
         const data = await res.json().catch(() => ({ error: 'The server sent an unreadable reply.' }));
         if (!res.ok) throw new Error(data.error || `Failed (${res.status}).`);
 
@@ -98,7 +102,7 @@ export function useImporter() {
           return { ...q, imports: { ...q.imports, files: q.imports.files.map((f) => rows.find((r) => r.name === f.name) || f) } };
         });
       } catch (e) {
-        settle(names.map((name) => ({ name, status: 'failed', error: e.message })));
+        settle(names.map((name) => ({ name, status: 'failed', error: failure(e) })));
       }
     },
     [apply, setImports],

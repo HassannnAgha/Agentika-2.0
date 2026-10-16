@@ -39,10 +39,10 @@ def test_agents_page_shape_and_routes():
     assert [a["name"] for a in ag] == ["Operations Agent", "Project Management Agent", "Sales Agent", "Marketing Agent"]
     pm = next(a for a in ag if a["key"] == "project")["classes"]
     flip = next(x for x in pm if x["c"] == "Assign a subtask")
-    assert flip["route"] == "approval" and flip["s"] == 5 and set(flip) == {"c", "s", "n", "lower", "req", "route", "suggest_delegate"}
+    assert flip["route"] == "approval" and flip["s"] == 7 and set(flip) == {"c", "s", "n", "lower", "req", "route", "suggest_delegate"}
     a = c.post("/scenario/task").json(); approve(a["id"])
     flip = next(x for x in next(a for a in get("/agents") if a["key"] == "project")["classes"] if x["c"] == "Assign a subtask")
-    assert flip["route"] == "automatic" and flip["s"] == 6              # the live flip, as the UI will show it
+    assert flip["route"] == "automatic" and flip["s"] == 8              # the live flip, as the UI will show it
     sales = next(a for a in ag if a["key"] == "sales")["classes"]
     assert any(x["route"] == "escalation" and x["req"] is None for x in sales) or sales == []
 

@@ -60,7 +60,7 @@ def poll_once(handler, limit: int = 10, imap_factory=None) -> dict:
             why = "already processed" if mid in seen else skip_reason(msg)
             if why: skipped.append({"from": msg["sender"], "why": why})
             else:
-                out = handler(msg["sender"], msg["subject"], msg["body"], msg["attachments"])
+                out = handler(msg["sender"], msg["subject"], msg["body"], msg["attachments"], message_id=msg["message_id"])
                 done.append({"from": msg["sender"], "subject": msg["subject"], "proposals": [x["cls"] for x in out]})
             seen.add(mid); box.store(num, "+FLAGS", "\\Seen")
     finally:

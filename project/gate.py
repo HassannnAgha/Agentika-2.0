@@ -1,13 +1,19 @@
-"""Risk-Trust Gate: hackathon slice of Bizzii. Deterministic, no LLM in routing.
-Agents propose, the gate decides. Same proposal + same evidence = same route."""
-import math, random, json
+"""Risk-Trust Gate. Deterministic, no LLM in routing, no I/O.
+Agents propose, the gate decides. Same proposal + same evidence = same route.
+
+Evaluation order: guardrail (refuse) -> floor rules (escalate, never earnable) -> evidence against a risk-scaled threshold
+(ask / recall window / automatic). Competence (W), appropriateness (A) and delegation willingness (D) are three separate
+Wilson lower bounds and are never blended into one score."""
+import math, random, re
 from collections import deque
 
-Z = 1.645                       # 95% one-sided Wilson
-TAU_MIN, TAU_MAX, GAMMA = 0.60, 0.90, 1.0
-DEAD_BAND = 0.05                # demotion only below tau - DEAD_BAND
-AUDIT_RATE = 0.10               # promoted classes still sampled to owner
-WINDOW = 30                     # last L records per (agent, class)
+Z = 1.645                       # one-sided 95% Wilson multiplier
+# Threshold curve tau(R) = TAU_MIN + (TAU_MAX - TAU_MIN) * R**GAMMA. These bounds reproduce the report: across the 22 FYP
+# classes the evidence minimum N_min(R) runs from 7 to 18 (tau about 0.70 to 0.87). Provisional, not calibrated on owners.
+TAU_MIN, TAU_MAX, GAMMA = 0.70, 0.93, 1.0
+DEAD_BAND = 0.05                # once granted, autonomy is withdrawn only below tau - DEAD_BAND (no flapping at the line)
+AUDIT_RATE = 0.10               # share of promoted actions still sent to the owner, so A and D stay observable after promotion
+WINDOW = 50                     # last L owner decisions and last L verified outcomes, kept separately, per (agent, class)
 
 LEVELS = {  # ordered low -> high risk
     "t": ["internal", "teammate", "client", "prospect", "public"],
@@ -47,6 +53,26 @@ def guardrail(cited, allowed):
     if leaked: return f"cites facts outside this client/business: {sorted(leaked)}"
     return None
 
+# ---- content guardrail: an outward message may state no price and no date that a cited fact does not record
+_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+_M = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+MONEY_RE = re.compile(r"(?:pkr|rs\.?|usd|\$|€|£)\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:pkr|usd|rupees|dollars)\b", re.I)
+DATE_RE = re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_M})[a-z]*\b|\b(?:{_M})[a-z]*\s+\d{{1,2}}(?:st|nd|rd|th)?\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b|\b\d{{1,2}}/\d{{1,2}}/\d{{2,4}}\b", re.I)
+
+def _norm(s):
+    s = s.lower()
+    for full in _MONTHS: s = s.replace(full, full[:3])
+    s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", s)
+    return re.sub(r"[\s,.]", "", s).replace("rs", "pkr").replace("rupees", "pkr")
+
+def content_guardrail(text, cited_texts):
+    """FYP guardrail: may state no price or date that is not already stored. Every money amount and explicit date in the
+    message must appear in one of the facts the proposal cites. Returns a reason string, or None."""
+    stored = _norm(" ".join(cited_texts or []))
+    found = [m.group(0).strip() for rx in (MONEY_RE, DATE_RE) for m in rx.finditer(text or "")]
+    bad = sorted({f for f in found if _norm(f) not in stored})
+    return f"states {', '.join(bad[:3])}, which no cited fact records" if bad else None
+
 def wilson(k, m, z=Z):
     if m == 0: return 0.0
     p = k / m
@@ -59,13 +85,16 @@ def tau(R): return TAU_MIN + (TAU_MAX - TAU_MIN) * R ** GAMMA
 def n_min(R): return math.ceil(Z * Z * tau(R) / (1 - tau(R)))
 
 class Pair:
-    """Evidence for one (agent, class). Nothing transfers between pairs."""
+    """Evidence for one (agent, class). Nothing transfers between pairs. Decisions and outcomes are windowed separately so a
+    burst of one can never push the other out of the window."""
     def __init__(self, window=WINDOW):
-        self.rec = deque(maxlen=window)
+        self.dec = deque(maxlen=window)        # owner decisions: a | rp | rq
+        self.out = deque(maxlen=window)        # verified outcomes: ok | fail
         self.granted = False
     def counts(self):
         c = {"a": 0, "rp": 0, "rq": 0, "ok": 0, "fail": 0}
-        for k in self.rec: c[k] += 1
+        for k in self.dec: c[k] += 1
+        for k in self.out: c[k] += 1
         return c
     def measures(self):
         c = self.counts()
@@ -108,6 +137,8 @@ class Gate:
         base = {"risk": R, "tau": tau(R), "why": why,
                 "W": m["W"], "A": m["A"], "D": m["D"], "nW": m["nW"]}
         if not earned: return {"route": "approval", **base}
+        if ctx.get("uncertain"):                                        # escalate when unsure: earned or not, an unsure agent asks
+            return {"route": "approval", **base, "why": f"earned, but the agent is unsure: {ctx['uncertain']}"}
         if self.rng.random() < AUDIT_RATE:                              # keeps A and D observable
             return {"route": "approval", **base, "why": "audit sample of a promoted class"}
         v = CLASSES[cls]["sig"][3]
@@ -115,13 +146,19 @@ class Gate:
 
     def record_decision(self, agent, cls, kind):
         """kind: approve | preference (sound, but I'd rather do it) | quality (content/timing wrong)"""
-        self.pair(agent, cls).rec.append({"approve": "a", "preference": "rp", "quality": "rq"}[kind])
+        self.pair(agent, cls).dec.append({"approve": "a", "preference": "rp", "quality": "rq"}[kind])
     def record_outcome(self, agent, cls, success):
-        self.pair(agent, cls).rec.append("ok" if success else "fail")
+        self.pair(agent, cls).out.append("ok" if success else "fail")
 
     def dump(self):
-        return {f"{a}|{c}": {"rec": list(p.rec), "granted": p.granted} for (a, c), p in self.pairs.items()}
+        return {f"{a}|{c}": {"dec": list(p.dec), "out": list(p.out), "granted": p.granted} for (a, c), p in self.pairs.items()}
     def load(self, d):
-        for k, v in d.items():
-            a, c = k.split("|"); p = self.pair(a, c)
-            p.rec.extend(v["rec"]); p.granted = v["granted"]
+        self.pairs.clear()
+        for k, v in (d or {}).items():
+            a, c = k.split("|", 1)
+            if c not in CLASSES: continue                                 # a class removed from the catalogue: its evidence is dropped
+            p = self.pair(a, c)
+            rec = v.get("rec")                                            # older single-window format
+            p.dec.extend(v.get("dec", [x for x in rec or [] if x in ("a", "rp", "rq")]))
+            p.out.extend(v.get("out", [x for x in rec or [] if x in ("ok", "fail")]))
+            p.granted = bool(v.get("granted"))

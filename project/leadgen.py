@@ -1,13 +1,13 @@
 """Sales agent, lead side: discover -> read the lead's own website -> score -> draft first outreach.
 Everything here PROPOSES. Sending goes through the gate (class send_lead_outreach, always escalated by F2).
 
-Discovery uses OpenStreetMap Nominatim (public data, no key, 1 request per search). If the network or the search
-fails it falls back to clearly labelled SAMPLE leads so the demo never depends on Wi-Fi. A lead's facts are only
-what a source actually said: nothing is invented."""
+Discovery: Google Places when GOOGLE_PLACES_API_KEY is set (best data), otherwise OpenStreetMap Nominatim (free, no key).
+Who to search for is decided from the business profile by the AI (plan_targets) and can be overridden by the owner.
+Sample leads exist only in DEMO_MODE. A lead's facts are only what a source actually said: nothing is invented."""
 import os, json, re, uuid, time, threading
 from urllib.parse import urlparse
 import httpx
-from store import STORE
+from store import STORE, demo
 import crawl, llm, persist
 
 lock = threading.RLock()
@@ -27,27 +27,50 @@ SAMPLE = [  # invented, flagged sample=True, pre-enriched because the .example d
 def _domain(u): return (urlparse(u if "//" in (u or "") else "//" + (u or "")).hostname or "").removeprefix("www.")
 def _key(l): return _domain(l.get("website", "")) or re.sub(r"\W+", "", l["name"].lower() + l.get("address", "")[:20])
 
+def _from_places(keyword, geo, limit):
+    """Google Places Text Search (New). Far better coverage than OpenStreetMap: name, address, website and phone for most businesses."""
+    r = httpx.post("https://places.googleapis.com/v1/places:searchText", timeout=15,
+                   headers={"X-Goog-Api-Key": os.environ["GOOGLE_PLACES_API_KEY"],
+                            "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber"},
+                   json={"textQuery": f"{keyword} in {geo}".strip() if geo else keyword, "maxResultCount": min(20, max(limit * 2, 5))})
+    r.raise_for_status()
+    return [{"name": (pl.get("displayName") or {}).get("text", ""), "category": keyword, "address": pl.get("formattedAddress", "")[:140],
+             "website": pl.get("websiteUri", ""), "phone": pl.get("nationalPhoneNumber") or pl.get("internationalPhoneNumber", ""), "email": "", "signals": {}}
+            for pl in r.json().get("places", []) if (pl.get("displayName") or {}).get("text")]
+
+def _from_osm(keyword, geo):
+    r = httpx.get("https://nominatim.openstreetmap.org/search", timeout=12,
+                  headers={"User-Agent": "Bizzii/1.0 (lead discovery; one query per search)"},
+                  params={"q": f"{keyword} {geo}".strip(), "format": "jsonv2", "extratags": 1, "addressdetails": 0, "limit": 40})
+    r.raise_for_status()
+    out = []
+    for it in r.json():
+        tags, name = it.get("extratags") or {}, it.get("name") or ""
+        if not name or it.get("category") in ("boundary", "place", "highway", "landuse", "natural"): continue
+        out.append({"name": name, "category": keyword, "address": it.get("display_name", "")[:140],
+                    "website": tags.get("website") or tags.get("contact:website") or "", "phone": tags.get("phone") or tags.get("contact:phone") or "",
+                    "email": tags.get("email") or tags.get("contact:email") or "", "signals": {}})
+    return out
+
 def discover(keyword: str, geo: str, limit: int = 8) -> dict:
-    """Find businesses. Returns {added, skipped, source, note}."""
-    limit = max(1, min(int(limit or 8), 15)); found, note, source = [], "", "openstreetmap"
+    """Find businesses of one type in one place. Google Places when GOOGLE_PLACES_API_KEY is set, OpenStreetMap otherwise.
+    Returns {added, skipped_duplicates, source, note, ids}. Real mode never invents a lead; demo mode may show labelled samples."""
+    limit = max(1, min(int(limit or 8), 20)); found, note = [], ""
+    source = "google_places" if os.getenv("GOOGLE_PLACES_API_KEY") else "openstreetmap"
     try:
-        r = httpx.get("https://nominatim.openstreetmap.org/search", timeout=12,
-                      headers={"User-Agent": "BizziiHackathon/1.0 (prototype; one query per search)"},
-                      params={"q": f"{keyword} {geo}".strip(), "format": "jsonv2", "extratags": 1, "addressdetails": 0, "limit": 40})
-        r.raise_for_status()
-        for it in r.json():
-            tags, name = it.get("extratags") or {}, it.get("name") or ""
-            if not name or it.get("category") in ("boundary", "place", "highway", "landuse", "natural"): continue
-            found.append({"name": name, "category": keyword, "address": it.get("display_name", "")[:140],
-                          "website": tags.get("website") or tags.get("contact:website") or "", "phone": tags.get("phone") or tags.get("contact:phone") or "",
-                          "email": tags.get("email") or tags.get("contact:email") or "", "signals": {}})
+        found = _from_places(keyword, geo, limit) if source == "google_places" else _from_osm(keyword, geo)
     except Exception as e:
-        note = f"Live search unavailable ({type(e).__name__}); showing sample leads."
+        note = f"{'Google Places' if source == 'google_places' else 'OpenStreetMap'} search failed ({type(e).__name__})."
+        if source == "google_places":                           # a Places failure still gets the free source
+            try: found, source = _from_osm(keyword, geo), "openstreetmap"; note += " Used OpenStreetMap instead."
+            except Exception as e2: note += f" OpenStreetMap failed too ({type(e2).__name__})."
     sample = False
     if not found:
+        if not demo():                                          # real mode: say so honestly, never invent leads
+            return {"added": 0, "skipped_duplicates": 0, "source": source, "note": note or "No public listings matched that search.", "ids": []}
         found, source, sample = [dict(s) for s in SAMPLE], "sample", True
         note = note or "No public listings matched; showing sample leads."
-    added = skipped = 0
+    added = skipped = 0; ids = []
     with lock:
         have = {_key(l) for l in LEADS.values()}
         for l in found:
@@ -55,10 +78,61 @@ def discover(keyword: str, geo: str, limit: int = 8) -> dict:
             if _key(l) in have: skipped += 1; continue
             have.add(_key(l)); lid = "ld-" + uuid.uuid4().hex[:6]
             LEADS[lid] = {"id": lid, "status": "new", "source": source, "sample": sample, "score": None, "reasons": [], "facts": {},
-                          "draft": None, "proposal": None, "geo": geo, **l}
-            _facts(LEADS[lid], listing=True); added += 1
+                          "draft": None, "proposal": None, "geo": geo, "found_at": time.time(), **l}
+            _facts(LEADS[lid], listing=True); added += 1; ids.append(lid)
         _save()
-    return {"added": added, "skipped_duplicates": skipped, "source": source, "note": note}
+    return {"added": added, "skipped_duplicates": skipped, "source": source, "note": note, "ids": ids}
+
+# ---------------------------------------------------------------- who to prospect: decided from the business profile
+def _rule_targets():
+    """No AI available: LEAD_TARGETS="dental clinic|Lahore; logistics firm|Lahore", else what the description says the business serves."""
+    env = [x.split("|") for x in os.getenv("LEAD_TARGETS", "").split(";") if x.strip()]
+    if env: return [{"keyword": k.strip(), "geo": (g[0] if g else "").strip(), "why": "set in LEAD_TARGETS"} for k, *g in env]
+    b = STORE.profile.get("business", {}); text = (b.get("description") or "") + " " + (STORE.profile.get("brand", {}).get("positioning") or "")
+    geo = next((m.group(1) for m in [re.search(r"\b(?:in|across|around)\s+([A-Z][a-zA-Z]+)", text)] if m), "")
+    m = re.search(r"\bfor\s+(.+?)(?:[.,;]|\s+in\s+|$)", text, re.I)
+    kinds = [k.strip() for k in re.split(r",|\band\b", m.group(1)) if len(k.strip()) > 3][:4] if m else []
+    return [{"keyword": re.sub(r"^(independent|small|local)\s+", "", k, flags=re.I), "geo": geo, "why": "named in the business description"} for k in kinds]
+
+def plan_targets(force: bool = False) -> dict:
+    """The business types and places the Sales agent searches, chosen by the AI from the onboarding profile (what the business does,
+    who its clients are, where it is). Kept until the owner edits them or asks for a re-plan."""
+    have = persist.get("sales_targets")
+    if have and have.get("targets") and not force: return have
+    prof = STORE.profile; b = prof.get("business", {})
+    out = llm.json_call(
+        "You decide who a small business should prospect. From its profile, propose 3 to 5 search targets for a maps search: a type of business "
+        "that would buy what this business sells, and a city. Prefer the kinds of clients it already serves, and its own city unless the profile says otherwise. "
+        'Return {"targets":[{"keyword":str,"geo":str,"why":str}]}.',
+        json.dumps({"name": b.get("name"), "category": b.get("category"), "description": b.get("description"), "positioning": prof.get("brand", {}).get("positioning"),
+                    "existing_clients": [c.get("name") for c in prof.get("clients", [])], "timezone": b.get("timezone"),
+                    "extra": [f"{x.get('label')}: {x.get('value')}" for x in b.get("custom", [])]}))
+    targets = [{"keyword": str(t.get("keyword", "")).strip()[:60], "geo": str(t.get("geo", "")).strip()[:60], "why": str(t.get("why", "")).strip()[:200]}
+               for t in (out or {}).get("targets", []) if isinstance(t, dict) and str(t.get("keyword", "")).strip()][:5] if out else []
+    rec = {"targets": targets, "by": "ai"} if targets else {"targets": _rule_targets(), "by": "rules"}
+    rec["at"] = time.strftime("%Y-%m-%d %H:%M"); rec["cursor"] = 0
+    persist.put("sales_targets", rec); return rec
+
+def set_targets(targets: list) -> dict:
+    rec = {"targets": [{"keyword": t["keyword"].strip()[:60], "geo": (t.get("geo") or "").strip()[:60], "why": "set by the owner"} for t in targets if t.get("keyword", "").strip()][:10],
+           "by": "owner", "at": time.strftime("%Y-%m-%d %H:%M"), "cursor": 0}
+    persist.put("sales_targets", rec); return rec
+
+def auto_prospect(per_run: int = 6, min_score: int = None) -> dict:
+    """One scheduled Sales run: search the next target in the rotation, read each new lead's website, score, draft. Sends nothing:
+    the caller turns the ready leads into ONE campaign proposal, which the gate escalates to the owner (floor rule F2)."""
+    min_score = int(os.getenv("LEAD_MIN_SCORE", "50")) if min_score is None else min_score
+    plan = plan_targets(); tg = plan.get("targets") or []
+    if not tg: return {"error": "no targets: finish onboarding (or set LEAD_TARGETS / PUT /api/sales/targets)"}
+    cur = int(plan.get("cursor", 0)); t = tg[cur % len(tg)]; plan["cursor"] = cur + 1; persist.put("sales_targets", plan)
+    found = discover(t["keyword"], t["geo"], per_run)
+    for lid in found.get("ids", []):
+        try: enrich(lid)
+        except Exception: pass                                   # an unreadable site just leaves the lead unscored
+    ready = [l["id"] for l in listing() if l.get("email") and l["status"] in ("enriched", "drafted") and (l["score"] or 0) >= min_score]
+    for lid in ready:
+        if not LEADS[lid].get("draft"): draft(lid)
+    return {"target": t, "found": found, "ready": ready}
 
 def add_by_website(url: str, category: str = "") -> dict:
     """Owner pastes a prospect's website: read it (robots-respecting), take the public email and what the site shows."""
@@ -130,7 +204,9 @@ def draft(lid: str) -> dict:
         out = llm.json_call(
             "You write a short, polite first email from a small business to a prospect. Use ONLY the numbered facts given. "
             "Never state a price, date, guarantee or result. Under 90 words. Offer a short call. Say how to opt out. Never write fact ids or numbers in brackets in the text. "
-            'Return {"subject": str, "body": str, "cited": [fact ids you used]}. Facts never to contradict: ' + json.dumps(never),
+            "Say how confident you are (0 to 1) that the email is accurate and appropriate for this prospect. "
+            'Return {"subject": str, "body": str, "cited": [fact ids you used], "confidence": number, "unsure_about": str}. Facts never to contradict: ' + json.dumps(never)
+            + "\n" + __import__("learning").guidance("sales", "send_lead_outreach"),
             json.dumps({"from": f"{owner['name']} at {biz['name']}", "about_the_sender": claims, "about_the_prospect": lead_f}))
         if out and not (isinstance(out.get("cited"), list) and out.get("subject") and out.get("body")): out = None
     if out:
@@ -215,7 +291,7 @@ def pick_lead():
     """The best drafted lead with a public email; seeds offline sample leads first if the bank is empty."""
     from fastapi import HTTPException
     with lock:
-        if not LEADS:
+        if not LEADS and demo():                                # sample leads exist only in demo mode
             for s in SAMPLE:
                 lid = "ld-" + uuid.uuid4().hex[:6]
                 LEADS[lid] = {"id": lid, "status": "new", "source": "sample", "sample": True, "score": None, "reasons": [], "facts": {},

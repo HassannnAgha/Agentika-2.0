@@ -14,6 +14,23 @@ export { nextId } from '../../app/onboarding/_data/merge';
  */
 
 const KEY = 'bizzii.onboarding.v2';
+
+/**
+ * A read that was in flight when the page was reloaded or left has no request behind it any more. Restoring it as
+ * "reading" would spin forever and block Continue, so it comes back as interrupted, ready to be read again.
+ */
+const INTERRUPTED = 'Reading was interrupted (the page was reloaded or left). Read it again.';
+function settleStaleReads(p) {
+  const im = p.imports || { website: null, files: [] };
+  return {
+    ...p,
+    imports: {
+      ...im,
+      website: im.website?.status === 'reading' ? { ...im.website, status: 'failed', error: INTERRUPTED } : im.website,
+      files: (im.files || []).map((f) => (f.status === 'reading' ? { ...f, status: 'failed', error: INTERRUPTED } : f)),
+    },
+  };
+}
 const Ctx = createContext(null);
 
 export function OnboardingProvider({ children }) {
@@ -23,7 +40,7 @@ export function OnboardingProvider({ children }) {
   useEffect(() => {
     try {
       const saved = window.sessionStorage.getItem(KEY);
-      if (saved) setProfile({ ...emptyProfile(), ...JSON.parse(saved) });
+      if (saved) setProfile(settleStaleReads({ ...emptyProfile(), ...JSON.parse(saved) }));
     } catch (e) {
       /* unreadable or blocked storage: start empty */
     }

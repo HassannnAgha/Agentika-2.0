@@ -24,16 +24,17 @@ export class ExtractionError extends Error {
   }
 }
 
-let client = null;
-function ai() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new ExtractionError(
-      'Import is not configured: set GEMINI_API_KEY in platform/frontend2/.env.local and restart the server.',
-      { status: 503 },
-    );
+/** GEMINI_API_KEY, then GEMINI_API_KEY_2, _3 ...: when one key's free daily quota is spent, the next key takes over. */
+function geminiKeys() {
+  return Object.keys(process.env).filter((k) => /^GEMINI_API_KEY(_\d+)?$/.test(k) && process.env[k]).sort().map((k) => process.env[k]);
+}
+const clients = new Map();
+function ai(key) {
+  if (!key) {
+    throw new ExtractionError('Import is not configured: set GEMINI_API_KEY in onboarding-ui/.env.local and restart the server.', { status: 503 });
   }
-  client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  return client;
+  if (!clients.has(key)) clients.set(key, new GoogleGenAI({ apiKey: key }));
+  return clients.get(key);
 }
 
 /**
@@ -48,8 +49,10 @@ function ai() {
  */
 const MODELS = () => [...new Set([process.env.GEMINI_MODEL || 'gemini-flash-latest', 'gemini-flash-lite-latest'])];
 
-// model -> time its daily quota resets
+// "keyIndex|model" -> time that key's quota for that model resets
 const exhaustedUntil = new Map();
+// model -> time it stops being overloaded (an overload is Google's, not a key's, so it applies to every key)
+const busyUntil = new Map();
 
 /** Google's retry hint and whether it is a per-day quota, from a 429 body. */
 function quotaInfo(message) {
@@ -76,6 +79,12 @@ async function slot(fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// one Gemini attempt may not hold the owner's screen longer than this
+const ATTEMPT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 20_000);
+const FILE_ATTEMPT_MS = Number(process.env.GEMINI_FILE_TIMEOUT_MS || 50_000); // a scanned PDF sent as a file takes Gemini longer
+class AttemptTimeout extends Error {}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new AttemptTimeout(`no answer in ${ms / 1000}s`)), ms))]);
+
 /**
  * @param {object} args
  * @param {Array} args.parts   Gemini parts: { text } or { inlineData: { mimeType, data } }
@@ -86,22 +95,28 @@ async function geminiExtract({ parts, schema, task }) {
   return slot(async () => {
     let lastWait = null;
     let sawBusy = false;
-    for (const id of MODELS()) {
-      if ((exhaustedUntil.get(id) ?? 0) > Date.now()) continue;
-      try {
-        return await callModel(id, { parts, schema, task });
-      } catch (e) {
-        if (!(e instanceof QuotaExhausted)) throw e;
-        exhaustedUntil.set(id, Date.now() + e.waitSec * 1000);
-        lastWait = lastWait == null ? e.waitSec : Math.min(lastWait, e.waitSec);
-        sawBusy = sawBusy || e.busy;
+    const keys = geminiKeys();
+    if (!keys.length) ai(null); // throws "not configured"
+    for (const [k, key] of keys.entries()) {
+      for (const id of MODELS()) {
+        if ((exhaustedUntil.get(`${k}|${id}`) ?? 0) > Date.now()) continue;
+        if ((busyUntil.get(id) ?? 0) > Date.now()) { sawBusy = true; continue; }
+        try {
+          return await callModel(id, key, { parts, schema, task });
+        } catch (e) {
+          if (!(e instanceof QuotaExhausted)) throw e;
+          if (e.busy) busyUntil.set(id, Date.now() + e.waitSec * 1000);
+          else exhaustedUntil.set(`${k}|${id}`, Date.now() + e.waitSec * 1000);
+          lastWait = lastWait == null ? e.waitSec : Math.min(lastWait, e.waitSec);
+          sawBusy = sawBusy || e.busy;
+        }
       }
     }
     if (sawBusy) {
       // Google answered 503 on every model we tried: a temporary overload, not a spent quota
       throw new ExtractionError('Gemini is overloaded right now. Wait a minute and read it again, or fill the screens in by hand.', { status: 503 });
     }
-    const soonest = Math.min(...MODELS().map((m) => exhaustedUntil.get(m) ?? Infinity));
+    const soonest = Math.min(...[...exhaustedUntil.values()].filter((t) => t > Date.now()), Infinity);
     const wait = Number.isFinite(soonest) ? (soonest - Date.now()) / 1000 : lastWait ?? 3600;
     throw new ExtractionError(
       `The free Gemini quota for today is used up. It resets in ${fmtWait(wait)}. ` +
@@ -119,12 +134,12 @@ class QuotaExhausted extends Error {
   }
 }
 
-async function callModel(id, { parts, schema, task }) {
+async function callModel(id, key, { parts, schema, task }) {
   // extraction is reading, not reasoning; low thinking is several times faster
   let thinking = { thinkingLevel: 'LOW' };
   for (let attempt = 0; ; attempt++) {
     try {
-      const res = await ai().models.generateContent({
+      const res = await withTimeout(ai(key).models.generateContent({
         model: id,
         contents: [{ role: 'user', parts: [...parts, { text: `Task: ${task}` }] }],
         config: {
@@ -134,11 +149,12 @@ async function callModel(id, { parts, schema, task }) {
           temperature: 0,
           ...(thinking ? { thinkingConfig: thinking } : {}),
         },
-      });
+      }), parts.some((p) => p.inlineData) ? FILE_ATTEMPT_MS : ATTEMPT_MS);
       const text = res.text;
       if (!text) throw new ExtractionError('Gemini returned no content for this source.');
       return JSON.parse(text);
     } catch (e) {
+      if (e instanceof AttemptTimeout) throw new QuotaExhausted(60, true); // stalled: treat as busy and let the next model try
       const status = e instanceof ApiError ? e.status : null;
       // a model that does not take a thinking level: ask again without one
       if (status === 400 && thinking && /thinking/i.test(e.message)) {
@@ -187,6 +203,7 @@ export async function extractJSON(args) {
         return await groqExtract({ ...args, system: SYSTEM });
       } catch (g) {
         console.error('Groq fallback failed too:', g.message);
+        throw new ExtractionError('Both AI services are busy right now. Wait a minute and read it again, or fill the screens in by hand.', { status: 503 });
       }
     }
     throw e;

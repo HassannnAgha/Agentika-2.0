@@ -46,16 +46,66 @@ def _db():
 
 def backend() -> str: return "postgres" if _db() is not None else "files"
 
-def _run(fn):
-    """Run fn(conn). On any failure mark the database down and return False."""
+def _drop_conn():
+    global _conn
+    with _lock:
+        try:
+            if _conn is not None: _conn.close()
+        except Exception: pass
+        _conn = None
+
+def _run(fn, retries=2):
+    """Run fn(conn). A dropped connection (Neon closes idle ones) is reconnected and the call retried before anything falls back
+    to a file. Only a database that stays unreachable is marked down for 30 seconds."""
     global _down_until
-    c = _db()
-    if c is None: return False
-    try:
-        with _lock: fn(c)
-        return True
-    except Exception as e:
-        _down_until = time.time() + 30; print(f"[persist] write failed, falling back to files ({type(e).__name__})"); return False
+    for attempt in range(retries + 1):
+        c = _db()
+        if c is None: return False
+        try:
+            with _lock: fn(c)
+            if attempt == 0 and _UNSYNCED: _flush_unsynced(c)
+            return True
+        except Exception as e:
+            _drop_conn()
+            if attempt == retries:
+                _down_until = time.time() + 30
+                print(f"[persist] database write failed after {retries + 1} tries ({type(e).__name__}); keeping it in a local file until it can be synced")
+                return False
+            time.sleep(0.3 * (attempt + 1))
+    return False
+
+# keys and streams written to a local file while the database was unreachable; pushed to the database at the next chance
+_UNSYNCED: set = set()
+
+def _mark_unsynced(name):
+    _UNSYNCED.add(name)
+    try: (DATA / "_unsynced.json").write_text(json.dumps(sorted(_UNSYNCED)), encoding="utf-8")
+    except OSError: pass
+
+def _flush_unsynced(c):
+    """Push file-only data back into the database, then retire the file so it can never shadow newer data."""
+    from psycopg.types.json import Jsonb
+    for name in sorted(_UNSYNCED):
+        try:
+            if name.startswith("stream:"):
+                stream = name[7:]; f = DATA / f"{stream}.jsonl"
+                if f.exists():
+                    for line in f.read_text(encoding="utf-8").splitlines():
+                        if line.strip(): c.execute("insert into events(stream,data) values (%s,%s)", (stream, Jsonb(json.loads(line))))
+                    f.rename(f.with_suffix(f".synced-{int(time.time())}"))
+            else:
+                f = DATA / f"{name}.json"
+                if f.exists():
+                    c.execute("insert into kv(key,value) values (%s,%s) on conflict(key) do update set value=excluded.value, updated=now()", (name, Jsonb(json.loads(f.read_text(encoding="utf-8")))))
+                    f.rename(f.with_suffix(f".synced-{int(time.time())}"))
+            _UNSYNCED.discard(name); print(f"[persist] synced {name} from its local file into the database")
+        except Exception as e:
+            print(f"[persist] could not sync {name} yet ({type(e).__name__})")
+    try: (DATA / "_unsynced.json").write_text(json.dumps(sorted(_UNSYNCED)), encoding="utf-8")
+    except OSError: pass
+
+try: _UNSYNCED.update(json.loads((DATA / "_unsynced.json").read_text(encoding="utf-8")) if URL else [])
+except Exception: pass
 
 def _worker():
     while True:
@@ -69,12 +119,9 @@ def get(key, default=None):
     with _lock:
         if key in _kv: return _kv[key]
     val, found = default, False
-    c = _db()
-    if c is not None:
-        try:
-            r = c.execute("select value from kv where key=%s", (key,)).fetchone()
-            if r: val, found = r[0], True
-        except Exception: pass
+    box = {}
+    if _run(lambda c: box.update(r=c.execute("select value from kv where key=%s", (key,)).fetchone())) and box.get("r"):
+        val, found = box["r"][0], True
     if not found and (DATA / f"{key}.json").exists():
         try: val, found = json.loads((DATA / f"{key}.json").read_text(encoding="utf-8")), True
         except Exception: pass
@@ -88,12 +135,13 @@ def put(key, value):
     def job():
         from psycopg.types.json import Jsonb
         if not _run(lambda c: c.execute("insert into kv(key,value) values (%s,%s) on conflict(key) do update set value=excluded.value, updated=now()", (key, Jsonb(json.loads(snap))))):
-            (DATA / f"{key}.json").write_text(snap, encoding="utf-8")
+            (DATA / f"{key}.json").write_text(snap, encoding="utf-8"); _mark_unsynced(key)
     _jobs.put(job) if _db() is not None else _write_file(key, snap)
 
 def _write_file(key, snap):
     try: (DATA / f"{key}.json").write_text(snap, encoding="utf-8")
-    except OSError: pass
+    except OSError: return
+    if URL: _mark_unsynced(key)                              # the database is configured but down: sync this later
 
 def delete(key):
     with _lock: _kv.pop(key, None)
@@ -110,9 +158,11 @@ def append(stream, rec):
         from psycopg.types.json import Jsonb
         if not _run(lambda c: c.execute("insert into events(stream,data) values (%s,%s)", (stream, Jsonb(rec)))):
             with open(DATA / f"{stream}.jsonl", "a", encoding="utf-8") as f: f.write(line + "\n")
+            _mark_unsynced("stream:" + stream)
     if _db() is not None: _jobs.put(job)
     else:
         with open(DATA / f"{stream}.jsonl", "a", encoding="utf-8") as f: f.write(line + "\n")
+        if URL: _mark_unsynced("stream:" + stream)          # the database is configured but down: sync this later
     return rec
 
 def _load_stream(stream):

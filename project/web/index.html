@@ -1,77 +1,252 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Risk-Trust Gate</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap">
-<nav class="top"><span class="brand"><span class="mark">B</span>Bizzii</span>
-<a href="/onboarding">1 &middot; Onboarding</a><a href="/leads">2 &middot; Lead gen</a><a class="on" href="/gate">3 &middot; Gate &amp; approvals</a>
-<span class="grow"></span><span class="pill" id="biz"></span><span class="pill" id="llm"></span></nav>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><link rel="stylesheet" href="/static/style.css">
+<style>
+.pipe{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}.pipe span{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);background:#fff;color:var(--dim)}
+.pipe .y{border-color:var(--ok);color:var(--ok)}.pipe .n{border-color:var(--bad);color:var(--bad)}.pipe .h{border-color:var(--recall);color:var(--recall)}.pipe .r{font-weight:600;color:var(--tx)}
+.big{font:600 28px var(--display)}.meter{height:8px;background:var(--line-soft);border-radius:5px;overflow:hidden}.meter>i{display:block;height:100%;background:var(--ok);transition:width .6s}
+.cols3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.spark{width:120px;height:28px}
+.chk{display:flex;gap:8px;align-items:center;font-size:13px;margin:4px 0}.chk input{width:auto}
+.train{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+</style></head><body><div class="wrap">
+<nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
+<a href="/onboarding">Setup</a><a class="on" href="/gate">Dashboard</a><a href="/leads">Leads</a>
+<span class="grow"></span><span class="pill" id="biz"></span></nav>
 
-<h1>Human + AI: better together</h1>
-<p class="lede">Agents propose. The Risk-Trust Gate decides how much a human has to be involved, from risk and the agent's own track record, and says why. The human stays in the loop exactly as much as the evidence requires, and that amount shrinks as the agent proves itself.</p>
-<div id="inactive"></div>
+<h1 id="title">Your back office</h1>
+<p class="lede">Four agents propose. The Risk-Trust Gate decides how much of you each action needs, from its risk and the agent's own record, and says why. Autonomy is earned from evidence and granted only with your consent, and you can always take it back.</p>
+<div id="banner"></div>
 
-<div class="row" style="margin-top:12px"><span class="mut">Demo controls:</span>
-<button class="sm" onclick="post('/reset?seed=true')">Reset gate (seeded history)</button>
-<button class="sm" onclick="post('/reset?seed=false')">Reset gate (empty history)</button>
-<button class="sm q" onclick="if(confirm('Reset gate, profile, leads and outbox to the demo?'))post('/reset?seed=true&full=true')">Reset everything</button></div>
-<div class="mut" style="margin-top:4px">History in seeded mode is seeded for the demo. The live flip and the refusals run for real.</div>
+<div class="stats" id="impact"></div>
+<div class="stats">
+ <div class="stat"><div class="k">System</div><div class="v" id="s-mode">…</div></div>
+ <div class="stat"><div class="k">Email</div><div class="v" id="s-email">…</div><div style="margin-top:8px" class="row"><button class="sm" onclick="testMail(this)">Send a test email</button><button class="sm" onclick="digest(this)">Send me my digest</button></div><div class="mut" id="mail-out"></div></div>
+ <div class="stat"><div class="k">Mailbox reading</div><div class="v" id="s-inbox">…</div></div>
+ <div class="stat"><div class="k">AI drafting</div><div class="v" id="s-ai">…</div></div>
+</div>
 
-<h2>Fire a scenario</h2><div class="row">
-<button onclick="sc('new_lead')">Lead gen: first outreach</button><button onclick="sc('task')">PM: assign a subtask</button>
-<button onclick="sc('crm')">Ops: flag quiet client</button><button onclick="sc('followup')">Ops: reply to client</button>
-<button onclick="sc('assign')">PM: reassign stalled task</button><button onclick="sc('draft')">Marketing: draft</button>
-<button onclick="sc('publish')">Marketing: publish</button><button onclick="sc('poisoned')">Poisoned email (leaks another client)</button></div>
+<div id="democtl" style="display:none"><h2>Demo controls</h2><div class="row">
+<button class="sm" onclick="post('/reset?seed=true')">Reset (seeded)</button><button class="sm" onclick="post('/reset?seed=false')">Reset (empty)</button>
+<button class="sm q" onclick="if(confirm('Reset everything?'))post('/reset?seed=true&full=true')">Reset everything</button>
+<button class="sm" onclick="sc('task')">PM: assign</button><button class="sm" onclick="sc('poisoned')">Poisoned email</button><button class="sm" onclick="sc('publish')">Publish</button></div></div>
 
 <h2>Waiting on you</h2><div id="pend" class="grid"></div>
+
+<h2>Your four agents</h2>
+<div class="agents">
+ <div class="card agent"><div class="row"><h3>Operations</h3><span class="grow"></span><svg class="spark" id="sp-operations"></svg><span id="st-operations"></span></div>
+  <div class="mut">Reads your client mail and attachments, replies, records what it learns, flags unhappy or quiet clients, corrects contact details, and spots new work for Project Management.</div>
+  <div class="meta" id="meta-operations"></div><div id="tm-operations"></div>
+  <details class="work"><summary><b>Give it work</b></summary><div style="margin-top:10px">
+   <div class="two"><div class="field"><label for="o-from">From</label><input id="o-from" placeholder="client@company.com"></div><div class="field"><label for="o-subj">Subject</label><input id="o-subj"></div></div>
+   <div class="field"><label for="o-body">Message</label><textarea id="o-body" placeholder="Paste an email the agent should handle"></textarea></div>
+   <div class="row"><button class="p" onclick="act(this,'operations',()=>api('/api/agents/ops/inbound',{sender:v('o-from'),subject:v('o-subj'),body:v('o-body')}))">Handle this email</button>
+   <button onclick="act(this,'operations',()=>api('/api/agents/ops/scan'))">Check for quiet clients</button><button onclick="act(this,'operations',()=>api('/api/inbox/poll'))">Read the mailbox now</button></div></div></details>
+  <div class="out" id="out-operations"></div></div>
+
+ <div class="card agent"><div class="row"><h3>Project Management</h3><span class="grow"></span><svg class="spark" id="sp-project"></svg><span id="st-project"></span></div>
+  <div class="mut">Turns confirmed work into subtasks, assigns each from your team's recorded skills and capacity, reassigns stalled tasks, and tells the teammate.</div>
+  <div class="meta" id="meta-project"></div><div id="tm-project"></div>
+  <details class="work"><summary><b>Give it work</b></summary><div style="margin-top:10px">
+   <div class="field"><label for="p-client">Client</label><select id="p-client"></select></div>
+   <div class="field"><label for="p-brief">Project brief</label><textarea id="p-brief" placeholder="What has the client asked for?"></textarea></div>
+   <div class="row"><button class="p" onclick="act(this,'project',()=>api('/api/agents/pm/plan',{client_id:v('p-client'),brief:v('p-brief')}))">Break down and assign</button>
+   <button onclick="act(this,'project',()=>api('/api/agents/pm/stalled?days=7'))">Find stalled tasks</button></div></div></details>
+  <div class="out" id="out-project"></div></div>
+
+ <div class="card agent"><div class="row"><h3>Sales</h3><span class="grow"></span><svg class="spark" id="sp-sales"></svg><span id="st-sales"></span></div>
+  <div class="mut">Decides which kinds of business to prospect from your profile, finds them, reads their websites, scores and drafts, and puts the ready ones in one campaign for you. First contact always waits for you.</div>
+  <div class="meta" id="meta-sales"></div><div id="tm-sales"></div>
+  <div><span class="mut">Prospecting for:</span> <span id="targets" class="mut">…</span></div>
+  <details class="work"><summary><b>Give it work</b></summary><div style="margin-top:10px"><div class="row">
+   <button class="p" onclick="act(this,'sales',()=>api('/api/agents/sales/prospect'))">Find leads now</button>
+   <button onclick="act(this,'sales',()=>api('/api/agents/sales/campaign',{}))">Propose a campaign from ready leads</button>
+   <button onclick="replan(this)">Re-plan who to target</button><a class="btn" href="/leads">Open the lead bank</a></div></div></details>
+  <div class="out" id="out-sales"></div></div>
+
+ <div class="card agent"><div class="row"><h3>Marketing</h3><span class="grow"></span><svg class="spark" id="sp-marketing"></svg><span id="st-marketing"></span></div>
+  <div class="mut">Drafts content in your recorded voice from your permitted claims, with a claims check. It never publishes: publishing is always held for you.</div>
+  <div class="meta" id="meta-marketing"></div><div id="tm-marketing"></div>
+  <details class="work"><summary><b>Give it work</b></summary><div style="margin-top:10px">
+   <div class="two"><div class="field"><label for="m-topic">Topic</label><input id="m-topic" placeholder="What should the post be about?"></div>
+   <div class="field"><label for="m-chan">Channel</label><select id="m-chan"><option>linkedin</option><option>newsletter</option><option>website</option></select></div></div>
+   <button class="p" onclick="act(this,'marketing',()=>api('/api/agents/marketing/draft',{topic:v('m-topic'),channel:v('m-chan')}))">Draft a post</button></div></details>
+  <div class="out" id="out-marketing"></div></div>
+</div>
+
+<h2>Train your agents</h2>
+<div class="card"><div class="row"><span class="mut grow">Practice drafts built from your real records. Grade them like real work. Your decisions build each agent's record of appropriateness and your willingness to delegate. Nothing is sent, so competence still has to be proven on real work.</span>
+ <select id="t-agent" style="width:auto"><option value="">All agents</option><option value="operations">Operations</option><option value="project">Project Management</option><option value="sales">Sales</option><option value="marketing">Marketing</option></select>
+ <button class="p" onclick="trainStart(this)">Start a training round</button></div>
+ <div class="mut" id="t-stats" style="margin-top:8px"></div><div class="train" id="train" style="margin-top:10px"></div></div>
+
+<div class="two" style="margin-top:6px">
+ <div><h2>Autonomy you have granted</h2><div class="card" id="consent"></div></div>
+ <div><h2>Your supervision rules <span class="mut" style="text-transform:none;letter-spacing:0">&middot; these can only add supervision</span></h2><div class="card" id="sup"></div></div>
+</div>
+<div class="two">
+ <div><h2>Stopped by the guardrail</h2><div class="card log" id="blocked"></div></div>
+ <div><h2>What you have taught the agents</h2><div class="card log" id="taught"></div></div>
+</div>
+
+<h2>Why approval rates are not enough</h2>
+<div class="card"><div class="mut">Three agents, each approved on exactly 82.5% of proposals. A gate that counts approvals treats them the same. This gate separates competence from your willingness to delegate, so it gives three different verdicts.</div><div class="cols3" id="closer" style="margin-top:10px"></div></div>
+
+<h2>Connect any AI agent</h2>
+<div class="card"><div>Bizzii is also an <b>MCP server</b>. Claude Desktop, Claude Code, Cursor or n8n can propose actions through this gate. Each outside agent gets its own trust record and starts at zero, and no MCP tool can approve anything: only you can.</div>
+<pre class="mail" id="mcp"></pre></div>
+
+<h2>What each agent may do on its own</h2><div id="cls"></div>
 <h2>Recent decisions</h2><div id="recent" class="card"></div>
-<h2>What the gate would do right now</h2><div id="cls"></div>
-<h2>Audit trail <span class="mut" style="text-transform:none;letter-spacing:0">&middot; every proposal, decision and execution, with the route and the reason (stored in <span id="store">...</span>)</span></h2>
+<h2>Audit trail <span class="mut" style="text-transform:none;letter-spacing:0">&middot; stored in <span id="store">…</span></span></h2>
 <div class="card scroll" style="max-height:340px;overflow-y:auto"><table id="audit"></table></div>
-<div class="grid" style="margin-top:6px">
-<div><h2>Decision log</h2><div id="log" class="card log"></div></div>
-<div><h2>Outbox (test only, nothing reaches a real address)</h2><div id="out" class="card log"></div></div></div>
+<div class="grid" style="margin-top:6px"><div><h2>Decision log</h2><div id="log" class="card log"></div></div><div><h2 id="outh">Outbox</h2><div id="out" class="card log"></div></div></div>
 
 <script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-async function post(u,b){try{const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
- if(!r.ok){const e=await r.json().catch(()=>({}));alert(e.detail||'Request failed')}}catch(e){alert('Network error')}load()}
-const sc=n=>post('/scenario/'+n), dec=(id,kind)=>post('/decision',{id,kind});
-function bar(label,v,t){return `<div class="mut">${label} ${v.toFixed(2)} / ${t.toFixed(2)}</div><div class="bar"><div class="fill" style="width:${v*100}%;background:${v>=t?'var(--ok)':'var(--blue)'}"></div><div class="tau" style="left:${t*100}%"></div></div>`}
-function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earned)return['Asks','Asks first: '+c.why];
- return c.sig[3]==='full'?['Auto','Runs without asking']:['Recall','Runs after a recall window you can stop']}
-function mail(p){return p&&p.subject?`<div class="mut">to ${esc(p.to)}</div><div><b>${esc(p.subject)}</b></div><pre class="mail">${esc(p.body)}</pre>`:`<code>${esc(JSON.stringify(p))}</code>`}
-const openState={};
-async function load(){
- let s;try{s=await (await fetch('/state')).json()}catch(e){return}
- biz.textContent=s.business+(s.profile_source==='onboarding'?' (your onboarding)':' (sample data)');
- llm.textContent=s.llm?'AI drafting: on':'AI drafting: templates';
- inactive.innerHTML=Object.entries(s.agents).filter(([k,v])=>!v.active).map(([k,v])=>`<div class="notice warn"><b>${esc(s.agent_names[k])} agent is inactive.</b> ${v.missing.join(', ')} was not connected during onboarding, so its proposals are refused.</div>`).join('');
- const groups={};s.classes.forEach(c=>(groups[c.agent]??=[]).push(c));
- cls.innerHTML=Object.entries(groups).map(([ag,list])=>{
-  if(!(ag in openState))openState[ag]=list.some(c=>c.counts.a+c.counts.ok+c.counts.rp+c.counts.rq>0||c.floor);
-  return `<details class="card" style="margin-bottom:8px" ${openState[ag]?'open':''} ontoggle="openState['${ag}']=this.open"><summary><b>${esc(s.agent_names[ag])} agent</b> <span class="mut">&middot; ${list.length} kinds of action, ${list.filter(c=>c.earned).length} earned</span></summary>
-  <div class="scroll"><table><tr><th>Action</th><th>Today</th><th>Risk</th><th style="min-width:130px">W competence</th><th style="min-width:130px">A appropriate</th><th style="min-width:130px">D delegation</th><th>Evidence</th></tr>
-  ${list.map(c=>{const [b,t]=route(c);return `<tr><td><b>${esc(c.label)}</b>${c.extension?' <span class="pill">hackathon extension</span>':''}<div class="mut mono">${esc(c.cls)} &middot; ${c.sig.join(' / ')}</div></td>
-  <td><span class="badge ${b}">${b}</span><div class="mut" style="max-width:220px">${esc(t)}</div></td><td>${c.risk.toFixed(2)}</td>
-  <td>${bar('',c.W,c.tau)}</td><td>${bar('',c.A,c.tau)}</td><td>${bar('',c.D,c.tau)}</td>
-  <td class="mut">${c.nW}/${c.n_min} verified<br>ok ${c.counts.a} &middot; mine ${c.counts.rp} &middot; wrong ${c.counts.rq}</td></tr>`}).join('')}</table></div></details>`}).join('');
- pend.innerHTML=s.pending.length?s.pending.map(a=>{const rc=a.status==='recall';
-  return `<div class="card q ${rc?'recall':''}"><div class="row"><b>${esc(a.label)}</b><span class="grow"></span>
-  <span class="badge ${rc?'Recall':a.decision.route==='escalate'?'Always':'Asks'}">${rc?'recall '+a.secs_left+'s':a.decision.route}</span></div>
-  <div class="mut">#${a.id} &middot; ${esc(a.agent)} agent &middot; for ${esc(a.who)}</div>
-  <div class="mut" style="margin:4px 0"><b>Why you are asked:</b> ${esc(a.decision.why)}</div>${mail(a.payload)}
-  ${a.facts.length?`<div class="mut">Facts it relied on:</div><ul class="facts">${a.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:''}
-  <div class="row">${rc?'':`<button class="p" onclick="dec(${a.id},'approve')">Approve</button>`}
-  <button onclick="dec(${a.id},'preference')">${rc?'Stop: ':''}Right, but I'd rather do it myself</button>
-  <button onclick="dec(${a.id},'quality')">${rc?'Stop: ':''}Wrong</button></div></div>`}).join(''):'<div class="mut">Nothing waiting.</div>';
- const lab={executed:'executed',declined:'declined',refused:'refused by guardrail',awaiting:'waiting',recall:'recall window'};
- recent.innerHTML=s.recent.length?`<table>${s.recent.map(a=>`<tr><td class="mut">#${a.id}</td><td><b>${esc(a.label)}</b> for ${esc(a.who)}</td>
-  <td><span class="badge ${({auto:'Auto',recall:'Recall',approval:'Asks',escalate:'Always',refuse:'Always'})[a.decision.route]}">${a.decision.route}</span></td>
-  <td>${lab[a.status]||a.status}${a.verified===true?' &middot; verified':a.verified===false?' &middot; <b style="color:var(--bad)">postcondition FAILED</b>':''}</td></tr>`).join('')}</table>`:'<span class="mut">Nothing yet.</span>';
- log.innerHTML=s.log.map(l=>`<div><span class="mut">${l.t}</span> ${esc(l.msg)}</div>`).join('')||'<div class="mut">Empty.</div>';
- try{const au=await (await fetch('/api/audit?n=40')).json();
-  audit.innerHTML='<tr><th>Time</th><th>#</th><th>Event</th><th>Action</th><th>For</th><th>Route</th><th>Risk</th><th>Reason</th></tr>'+au.map(e=>`<tr><td class="mut">${esc(e.t)}</td><td>${e.id}</td>
-   <td>${esc(e.event.replace('owner_','owner: '))}${e.verified===true?' &middot; verified':e.verified===false?' &middot; FAILED':''}</td><td>${esc(e.label)}</td><td>${esc(e.who)}</td><td>${esc(e.route)}</td><td>${e.risk}</td><td class="mut">${esc(e.why)}</td></tr>`).join('');
-  store.textContent=(await (await fetch('/api/storage')).json()).backend}catch(e){}
- try{const o=await (await fetch('/api/outbox')).json();out.innerHTML=o.map(m=>`<div><span class="mut">${esc(m.t)}</span> to <code>${esc(m.intended_to)}</code>: ${esc(m.subject)}${m.delivered_to?' &rarr; delivered to test inbox':' (written to outbox only)'}</div>`).join('')||'<div class="mut">No email yet.</div>'}catch(e){}
+const v=id=>document.getElementById(id).value, $=id=>document.getElementById(id);
+const AG=['operations','project','sales','marketing'];
+const UNDO=['assign_subtask','reassign_stalled_task','update_task_record','update_client_record','flag_relationship_risk','draft_content','retain_approved_content','decompose_project','identify_project'];
+const RB={auto:['Auto','ran on its own'],recall:['Recall','runs after a window you can stop'],approval:['Asks','waiting for you'],escalate:['Always','held for you by a fixed rule'],refuse:['Always','refused by the guardrail']};
+let S=null,pendSig='',supDone=false; const openState={},DRAFTS={};
+async function api(u,b,m){const r=await fetch(u,{method:m||'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||'Request failed');return j}
+const get=async u=>(await fetch(u)).json();
+async function post(u,b){try{await api(u,b)}catch(e){alert(e.message)}pendSig='';load()}
+const sc=n=>post('/scenario/'+n);
+function toLine(){return S&&!S.email.live&&S.email.test_inbox?`<div class="mut">Test mode: delivered to <b>${esc(S.email.test_inbox)}</b>, not to this address.</div>`:''}
+function mail(p){if(!p)return'';
+ if(p.recipients)return `<div class="mut">${p.recipients.length} messages &middot; ${esc(p.campaign||'')}</div>`+p.recipients.slice(0,3).map(r=>`<div class="mut">to ${esc(r.to)} &middot; <b>${esc(r.subject)}</b></div>`).join('')+toLine();
+ if(p.subject)return `<div class="mut">to ${esc(p.to)}</div><div><b>${esc(p.subject)}</b></div><pre class="mail">${esc(p.body)}</pre>`+(p.to?toLine():'');
+ if(p.subtasks)return `<ol class="facts">${p.subtasks.map(s=>`<li>${esc(s)}</li>`).join('')}</ol>`;
+ if(p.task_id&&p.to)return `<div><b>${esc(p.title)}</b></div><div class="mut">${esc(p.from)} &rarr; ${esc(p.to)} &middot; ${esc(p.reason||'')}</div>`;
+ if(p.assignee)return `<div><b>${esc(p.title)}</b></div><div class="mut">&rarr; ${esc(p.assignee)}${p.due?', due '+esc(p.due):''}${p.reason?' &middot; '+esc(p.reason):''}</div>`;
+ if(p.text)return `<pre class="mail">${esc(p.text)}</pre>${p.claims_check&&p.claims_check!=='clean'?`<div class="notice warn">Claims check: ${esc([].concat(p.claims_check).join('; '))}</div>`:''}`;
+ if(p.facts)return `<ul class="facts">${p.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`;
+ if(p.field)return `<div class="mut">${esc(p.field)}: ${esc(p.value)}</div>`;
+ if(p.changes)return `<code>${esc(JSON.stringify(p.changes))}</code>`;
+ return `<code>${esc(JSON.stringify(p).slice(0,300))}</code>`}
+function pipe(d){const w=(d.why||'').toLowerCase(),r=d.route;let s=[];
+ const pre=/onboarding|paused|inactive/.test(w);
+ if(r==='refuse'){s.push(pre?['n','Agent: '+d.why]:['y','Agent ready'],pre?['','Guardrail']:['n','Guardrail: '+d.why])}
+ else{s.push(['y','Agent ready'],['y','Guardrail: facts and recipient check out']);
+  if(r==='escalate')s.push(['n','Floor rule: '+d.why]);else{s.push(['y','No floor rule']);
+   if('W' in d)s.push(/needs \d+/.test(w)?['h','Evidence: '+d.why.split(';')[0]]:['y',`Evidence: W ${(+d.W).toFixed(2)} A ${(+d.A).toFixed(2)} D ${(+d.D).toFixed(2)} vs ${(+d.tau).toFixed(2)}`]);
+   if(d.held_by)s.push(['h','Your rule: '+d.why]);if(d.promotion)s.push(['h','Earned: needs your consent']);if(d.unsure)s.push(['h','Agent unsure: '+d.unsure]);}}
+ s.push(['r','Route: '+r]);return `<div class="pipe">${s.map(([c,t])=>`<span class="${c}">${esc(t)}</span>`).join('')}</div>`}
+function resultCard(x){const [b,t]=RB[x.route]||['Asks',''];if(x.cls==='draft_content')DRAFTS[x.id]=x.payload.text||'';
+ return `<div class="card q ${x.route==='refuse'?'refused':x.route==='escalate'?'esc':''}" style="margin-top:8px;padding:12px"><div class="row"><b>${esc(x.label)}</b><span class="mut">for ${esc(x.who)}</span><span class="grow"></span><span class="badge ${b}">${x.route}</span></div>
+ <div class="mut">${esc(t)}. ${esc(x.why)}</div>${mail(x.payload)}
+ ${x.cls==='draft_content'?`<div class="row"><button class="sm" onclick="publishDraft(this,${x.id})">Propose publishing this</button></div>`:''}</div>`}
+function publishDraft(btn,id){act(btn,'marketing',()=>api('/api/agents/marketing/publish',{text:DRAFTS[id]||'',channel:v('m-chan')}))}
+async function act(btn,ag,fn){const t=btn.textContent;btn.disabled=true;btn.textContent='Working…';const out=$('out-'+ag);
+ try{const r=await fn();
+  if(Array.isArray(r))out.innerHTML=r.map(resultCard).join('')||'<div class="mut">Nothing to propose.</div>';
+  else if(r&&r.route)out.innerHTML=`<div class="notice ${r.route==='refuse'?'bad':'ok'}"><b>Campaign #${r.id}: ${r.recipients} message${r.recipients==1?'':'s'}</b>, ${esc(r.route)} &middot; ${esc(r.why)}${r.skipped&&r.skipped.length?`<div class="mut">Skipped: ${esc(r.skipped.slice(0,4).map(s=>s.lead+' ('+s.why+')').join(', '))}</div>`:''}</div>`;
+  else out.innerHTML=`<div class="notice ok">${esc(summary(r))}</div>`}
+ catch(e){out.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}
+ btn.disabled=false;btn.textContent=t;pendSig='';load()}
+function summary(r){if(typeof r.skipped==='string')return r.skipped;
+ if(r.target)return `Searched for "${r.target.keyword}${r.target.geo?' in '+r.target.geo:''}": ${r.found&&r.found.added!=null?r.found.added:'?'} new leads, ${(r.ready||[]).length} ready.`+(r.campaign?` Campaign #${r.campaign.id} (${r.campaign.recipients}) is waiting for you.`:'')+(r.found&&r.found.note?' '+r.found.note:'');
+ if(r.processed!=null)return `Read ${r.processed} new message${r.processed==1?'':'s'}`+(r.skipped&&r.skipped.length?`, skipped ${r.skipped.length}`:'')+'.';
+ if(r.error)return r.error;return JSON.stringify(r).slice(0,200)}
+// ---- decisions from the dashboard: approve (optionally with edits / autonomy), or decline with a reason
+async function decide(id,kind,allow){const card=$('pc-'+id);const reason=card.querySelector('.reason')?card.querySelector('.reason').value:'';
+ const ed=card.querySelector('.edit');const edits=ed&&ed.dataset.field&&card.querySelector('details.ed[open]')?{[ed.dataset.field]:ed.value}:{};
+ try{await api('/decision',{id,kind,reason,edits,allow_autonomy:!!allow})}catch(e){alert(e.message)}pendSig='';load();loadSide()}
+function pendCard(a){const rc=a.status==='recall',d=a.decision,p=a.payload,f=['body','text'].find(k=>typeof p[k]==='string'&&!p.recipients);
+ return `<div class="card q ${rc?'recall':d.route==='escalate'?'esc':''}" id="pc-${a.id}"><div class="row"><b>${esc(a.label)}</b><span class="grow"></span>
+ <span class="badge ${rc?'Recall':d.route==='escalate'?'Always':'Asks'}" id="cd-${a.id}">${rc?'recall':d.route}</span></div>
+ <div class="mut">#${a.id} &middot; ${esc((S.agent_names||{})[agentOf(a)]||a.agent)} agent &middot; for ${esc(a.who)}</div>${pipe(d)}
+ <div class="mut" style="margin:4px 0"><b>Why you are asked:</b> ${esc(d.why)}</div>${mail(p)}
+ ${a.facts.length?`<div class="mut">Facts it relied on:</div><ul class="facts">${a.facts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
+ ${f&&!rc?`<details class="ed"><summary class="mut">Edit before approving</summary><textarea class="edit" data-field="${f}" rows="6">${esc(p[f])}</textarea></details>`:''}
+ <input class="reason" placeholder="Why? (optional, teaches the agent)" style="margin:6px 0">
+ <div class="row">${d.promotion?`<button class="p" onclick="decide(${a.id},'approve',true)">Approve, and let it do these on its own</button>`:''}${rc?'':`<button class="${d.promotion?'':'p'}" onclick="decide(${a.id},'approve')">Approve</button>`}
+ <button onclick="decide(${a.id},'preference')">${rc?'Stop: ':''}Right, but I'd rather do it myself</button><button onclick="decide(${a.id},'quality')">${rc?'Stop: ':''}Wrong</button></div></div>`}
+function agentOf(a){const c=(S.classes||[]).find(x=>x.cls===a.cls);return c?c.agent:a.agent}
+async function testMail(btn){btn.disabled=true;$('mail-out').textContent='sending…';try{const r=await api('/api/email/test');$('mail-out').textContent='Test email sent to '+(r.delivered_to||'?')}catch(e){$('mail-out').textContent=e.message}btn.disabled=false}
+async function digest(btn){btn.disabled=true;$('mail-out').textContent='sending…';try{const r=await api('/api/digest/send');$('mail-out').textContent=`Digest sent: ${r.waiting} waiting, ${r.done} done`}catch(e){$('mail-out').textContent=e.message}btn.disabled=false}
+async function replan(btn){btn.disabled=true;try{await api('/api/sales/targets/replan');await loadTargets()}catch(e){$('out-sales').innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}btn.disabled=false}
+async function loadTargets(){try{const t=await get('/api/sales/targets');$('targets').innerHTML=(t.targets||[]).map(x=>`<span class="tag" title="${esc(x.why||'')}">${esc(x.keyword)}${x.geo?' &middot; '+esc(x.geo):''}</span>`).join('')+` <span class="mut">(${esc(t.by==='ai'?'chosen by the AI from your profile':t.by==='owner'?'set by you':'from your profile')})</span>`}catch(e){}}
+async function loadClients(){try{const t=await get('/api/team');$('p-client').innerHTML=t.clients.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')||'<option value="">No clients recorded</option>'}catch(e){}}
+// ---- training
+async function trainStart(btn){btn.disabled=true;try{const r=await api('/api/train/start?agent='+v('t-agent')+'&n=4');$('t-stats').textContent=`${r.created} practice drafts ready.`}catch(e){$('t-stats').textContent=e.message}btn.disabled=false;loadTrain()}
+async function grade(id,kind){const box=$('tr-'+id);const reason=box.querySelector('input').value;try{const r=await api('/api/train/'+id,{kind,reason});box.outerHTML=`<div class="card mut">Graded: ${esc(kind)}. A ${r.A.toFixed(2)} &middot; D ${r.D.toFixed(2)} &middot; ${r.earned?'earned':esc(r.why)}</div>`}catch(e){alert(e.message)}loadTrainStats();load()}
+async function loadTrainStats(){try{const t=await get('/api/train');$('t-stats').textContent=`${t.open.length} waiting to be graded · graded so far: ${t.graded} (approve ${t.by_kind.approve}, I'd rather do it myself ${t.by_kind.preference}, wrong ${t.by_kind.quality})`;return t}catch(e){}}
+async function loadTrain(){const t=await loadTrainStats();if(!t)return;$('train').innerHTML=t.open.slice(-12).reverse().map(x=>`<div class="card" id="tr-${x.id}"><div class="row"><b>${esc(x.label)}</b><span class="grow"></span><span class="pill">practice</span></div>
+ <div class="mut">${esc((S&&S.agent_names||{})[x.agent]||x.agent)} agent &middot; for ${esc(x.who)}</div>${mail(x.payload)}<input placeholder="Why? (optional)" style="margin:6px 0">
+ <div class="row"><button class="p" onclick="grade(${x.id},'approve')">Good, I would send this</button><button onclick="grade(${x.id},'preference')">Fine, but I'd rather do it</button><button onclick="grade(${x.id},'quality')">Wrong</button></div></div>`).join('')}
+// ---- supervision and consent
+async function renderSup(){const s=await get('/api/supervision');const byAg={};s.classes.forEach(c=>(byAg[c.agent]??=[]).push(c));
+ $('sup').innerHTML=`<label class="chk"><input type="checkbox" id="su-cl" ${s.always_ask_clients?'checked':''}>Always ask me before anything reaches a client</label>
+ <label class="chk"><input type="checkbox" id="su-pr" ${s.always_ask_prospects?'checked':''}>Always ask me before anything reaches a prospect</label>
+ <div class="mut" style="margin-top:8px">Pause an agent, or cap its automatic actions per day:</div>
+ ${Object.entries(s.agents).map(([k,n])=>`<div class="chk"><input type="checkbox" class="su-pa" value="${k}" ${s.paused_agents.includes(k)?'checked':''}> Pause ${esc(n)} <span class="grow"></span> cap <input type="number" min="0" class="su-cap" data-ag="${k}" value="${s.daily_cap[k]??''}" style="width:70px"></div>`).join('')}
+ <div class="chk">Recall window (seconds, at least ${s.system_recall_seconds}) <input type="number" id="su-rc" min="${s.system_recall_seconds}" value="${s.recall_seconds??''}" style="width:100px"></div>
+ <details><summary class="mut">Always ask me for these kinds of action</summary>${Object.entries(byAg).map(([ag,l])=>`<div class="mut" style="margin-top:6px">${esc(s.agents[ag])}</div>`+l.map(c=>`<label class="chk"><input type="checkbox" class="su-cls" value="${c.cls}" ${s.always_ask_classes.includes(c.cls)?'checked':''}>${esc(c.label)}</label>`).join('')).join('')}</details>
+ <div class="row" style="margin-top:10px"><button class="p" onclick="saveSup(this)">Save rules</button><span class="mut" id="su-out"></span></div>`}
+async function saveSup(btn){const caps={};document.querySelectorAll('.su-cap').forEach(i=>{if(i.value!=='')caps[i.dataset.ag]=+i.value});
+ const body={always_ask_clients:$('su-cl').checked,always_ask_prospects:$('su-pr').checked,paused_agents:[...document.querySelectorAll('.su-pa:checked')].map(i=>i.value),
+  daily_cap:caps,recall_seconds:$('su-rc').value===''?null:+$('su-rc').value,always_ask_classes:[...document.querySelectorAll('.su-cls:checked')].map(i=>i.value)};
+ try{await api('/api/supervision',body,'PUT');$('su-out').textContent='Saved.'}catch(e){$('su-out').textContent=e.message}}
+async function setConsent(agent,cls,allow){try{await api('/api/consent',{agent,cls,allow})}catch(e){alert(e.message)}loadSide()}
+// ---- side panels refreshed less often
+async function loadSide(){
+ try{const im=await get('/api/impact');$('impact').innerHTML=[['Minutes saved (estimate)',im.minutes_saved_estimate],['Done',im.done+' <span class="mut">('+im.ran_alone+' on their own)</span>'],['Your decisions',im.owner_decisions+' <span class="mut">('+im.owner_review_minutes+' min of your time)</span>'],['Stopped by the guardrail',im.blocked]]
+  .map(([k,x])=>`<div class="stat"><div class="k">${k}</div><div class="v big">${x}</div></div>`).join('')}catch(e){}
+ try{const c=await get('/api/consent');$('consent').innerHTML=c.classes.length?`<table>${c.classes.map(x=>`<tr><td><b>${esc(x.label)}</b><div class="mut">${esc(x.agent)}${x.earned?' &middot; earned':' &middot; not earned now'}</div></td>
+  <td>${x.consent==='granted'?'<span class="badge Auto">runs on its own</span>':x.consent==='declined'?'<span class="badge Off">you keep approving</span>':'<span class="badge Asks">not asked yet</span>'}</td>
+  <td style="text-align:right">${x.consent==='granted'?`<button class="sm" onclick="setConsent('${x.agent}','${x.cls}',false)">Take it back</button>`:`<button class="sm" onclick="setConsent('${x.agent}','${x.cls}',true)">Allow</button>`}</td></tr>`).join('')}</table>`:'<div class="mut">No agent has earned anything yet. When one does, you are asked before it runs on its own.</div>'}catch(e){}
+ try{const b=await get('/api/blocked');$('blocked').innerHTML=b.map(x=>`<div><span class="pill">${esc(x.kind)}</span> <b>${esc(x.label)}</b> <span class="mut">for ${esc(x.who)} &middot; ${esc(x.t)}</span><div class="mut">${esc(x.why)}</div></div>`).join('')||'<div class="mut">Nothing stopped yet.</div>'}catch(e){}
+ try{const l=await get('/api/learning');$('taught').innerHTML=l.map(x=>`<div><b>${esc(x.cls)}</b> <span class="mut">(${esc(x.agent)}) &middot; ${x.edits} edit${x.edits==1?'':'s'}</span>${x.reasons.slice(-3).map(r=>`<div class="mut">&ldquo;${esc(r.reason)}&rdquo;</div>`).join('')}</div>`).join('')||'<div class="mut">Nothing yet. Edit a draft or say why something is wrong, and the agent writes the next one with it.</div>'}catch(e){}
+ for(const ag of AG){try{const h=await get('/api/trust/history?agent='+ag+'&n=60');spark('sp-'+ag,h)}catch(e){}}
 }
-load();setInterval(load,1000);
+function spark(id,h){const el=$(id);if(!el)return;if(!h.length){el.innerHTML='';return}
+ const by={};h.forEach(e=>(by[e.cls]??=[]).push(e));const cls=Object.keys(by).sort((a,b)=>by[b].length-by[a].length)[0];const pts=by[cls].slice(-30);
+ const xy=k=>pts.map((e,i)=>`${(i/(Math.max(1,pts.length-1)))*118+1},${27-e[k]*25}`).join(' ');
+ el.innerHTML=`<title>${esc(cls)}: competence (green), appropriateness (blue), delegation (amber)</title><polyline fill="none" stroke="#1C7A5E" stroke-width="1.5" points="${xy('W')}"/><polyline fill="none" stroke="#3D5BC4" stroke-width="1" points="${xy('A')}"/><polyline fill="none" stroke="#A96A10" stroke-width="1" points="${xy('D')}"/>`}
+async function loadOnce(){try{const r=await get('/api/compare');$('closer').innerHTML=r.map(x=>`<div class="card"><b>${esc(x.pair)}</b><div class="mut">approved ${Math.round(x.approval_rate*100)}% &middot; ${x.prefer_own} &ldquo;I'd rather do it&rdquo; &middot; ${x.wrong} &ldquo;wrong&rdquo;</div>
+  <div style="margin:8px 0">Approval-rate gate: <span class="badge ${x.pooled_gate==='promoted'?'Auto':'Off'}">${x.pooled_gate}</span></div><div>This gate: <span class="badge ${x.risk_trust_gate==='promoted'?'Auto':'Always'}">${x.risk_trust_gate}</span></div>
+  <div class="mut" style="margin-top:6px">${esc(x.diagnosis)}</div><div class="mut">W ${x.W} &middot; A ${x.A} &middot; D ${x.D} vs ${x.threshold}</div></div>`).join('')}catch(e){}
+ $('mcp').textContent=`MCP endpoint:  ${location.origin}/mcp\n\nClaude Code:   claude mcp add --transport http bizzii ${location.origin}/mcp\nClaude Desktop / Cursor: add a remote MCP server with that URL.\n\nTools: bizzii_status, list_action_types, list_records, get_facts, propose_action, check_action, list_waiting, trust_record`}
+function bar(v,t){return `<div class="mut">${v.toFixed(2)} / ${t.toFixed(2)}</div><div class="bar"><div class="fill" style="width:${v*100}%;background:${v>=t?'var(--ok)':'var(--blue)'}"></div><div class="tau" style="left:${t*100}%"></div></div>`}
+function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earned)return['Asks','Asks first: '+c.why];return c.sig[3]==='full'?['Auto','Runs without asking (with your consent)']:['Recall','Runs after a recall window you can stop']}
+async function load(){
+ let s;try{s=await get('/state')}catch(e){return}S=s;
+ $('biz').textContent=s.onboarded?s.business:'No business set up yet';$('title').textContent=s.onboarded?s.business:'Your back office';
+ $('democtl').style.display=s.mode==='demo'?'':'none';
+ $('banner').innerHTML=(!s.onboarded?`<div class="notice warn"><b>No business is recorded yet.</b> Every agent's proposal is refused until setup is complete. <a href="/onboarding">Start setup</a>.</div>`:'')
+  +(s.seeded_history?`<div class="notice"><b>The starting history is seeded</b> (SEED_HISTORY), so the agents are not starting cold. Every decision and outcome after that is real.</div>`:'');
+ $('s-mode').innerHTML=(s.mode==='demo'?'Demo mode':'<span class="dot" style="background:var(--ok)"></span>Live')+` <span class="mut">&middot; ${Math.round(s.audit_rate*100)}% of automatic actions still checked by you</span>`;
+ $('s-email').innerHTML=!s.email.mailbox?'<span class="dot" style="background:var(--bad)"></span>No mailbox configured':s.email.live?'<span class="dot" style="background:var(--bad)"></span>Live: emails go to real recipients':`<span class="dot" style="background:var(--recall)"></span>Test mode: every approved email goes to <b>${esc(s.email.test_inbox||'(TEST_INBOX not set)')}</b>`;
+ $('s-inbox').innerHTML=s.inbox.configured?(s.inbox.polling?'<span class="dot" style="background:var(--ok)"></span>Reading new mail every minute':'Connected, not reading on its own <span class="mut">(INBOX_POLL=0)</span>'):'Not connected';
+ $('s-ai').innerHTML=s.llm?'<span class="dot" style="background:var(--ok)"></span>On, with a confidence check on every draft':'Templates only';
+ const byAg={};s.classes.forEach(c=>(byAg[c.agent]??=[]).push(c));
+ for(const ag of AG){const st=s.agents[ag]||{active:false,missing:['unknown']};const list=byAg[ag]||[];
+  $('st-'+ag).innerHTML=st.active&&s.onboarded?'<span class="badge Auto">Active</span>':`<span class="badge Always" title="${esc((st.missing||[]).join('; '))}">${s.onboarded?'Inactive':'Waiting for setup'}</span>`;
+  $('meta-'+ag).innerHTML=`<span><b>${list.filter(c=>c.earned).length}</b> of ${list.length} kinds of action earned</span><span><b>${(s.agent_open||{})[ag]||0}</b> waiting on you</span>`+(s.agent_last&&s.agent_last[ag]?`<span>Last: ${esc(s.agent_last[ag])}</span>`:'')+(!st.active&&s.onboarded?`<span style="color:var(--bad)">${esc(st.missing.join('; '))}</span>`:'');
+  const next=list.filter(c=>!c.earned&&!c.floor&&c.nW>0).sort((a,b)=>b.nW/b.n_min-a.nW/a.n_min)[0];
+  $('tm-'+ag).innerHTML=next?`<div class="mut">Next to earn: <b>${esc(next.label)}</b> &middot; ${next.nW}/${next.n_min} verified outcomes</div><div class="meter"><i style="width:${Math.min(100,next.nW/next.n_min*100)}%"></i></div>`:'';}
+ $('cls').innerHTML=AG.map(ag=>{const list=byAg[ag]||[];if(!(ag in openState))openState[ag]=false;
+  return `<details class="card" style="margin-bottom:10px" ${openState[ag]?'open':''} ontoggle="openState['${ag}']=this.open"><summary><b>${esc(s.agent_names[ag])}</b> <span class="mut">&middot; ${list.length} kinds of action, ${list.filter(c=>c.earned).length} earned</span></summary>
+  <div class="scroll" style="margin-top:8px"><table><tr><th>Action</th><th>Today</th><th>Risk</th><th style="min-width:120px">Competence</th><th style="min-width:120px">Appropriate</th><th style="min-width:120px">Delegation</th><th>Evidence</th></tr>
+  ${list.map(c=>{const [b,t]=route(c);return `<tr><td><b>${esc(c.label)}</b>${c.extension?' <span class="pill">demo extension</span>':''}</td><td><span class="badge ${b}">${b}</span><div class="mut" style="max-width:230px">${esc(t)}</div>${c.suggest_delegate?`<div class="notice ok" style="margin:6px 0 0">${esc(c.suggest_delegate)}</div>`:''}</td><td>${c.risk.toFixed(2)}</td>
+  <td>${bar(c.W,c.tau)}</td><td>${bar(c.A,c.tau)}</td><td>${bar(c.D,c.tau)}</td><td class="mut">${c.nW}/${c.n_min} verified<br>ok ${c.counts.a} &middot; mine ${c.counts.rp} &middot; wrong ${c.counts.rq}</td></tr>`}).join('')}</table></div></details>`}).join('');
+ const sig=s.pending.map(a=>a.id+a.status).join(',');
+ if(sig!==pendSig){pendSig=sig;$('pend').innerHTML=s.pending.length?s.pending.map(pendCard).join(''):'<div class="card mut">Nothing is waiting on you.</div>'}
+ s.pending.filter(a=>a.status==='recall').forEach(a=>{const el=$('cd-'+a.id);if(el)el.textContent='recall '+Math.ceil(a.secs_left)+'s'});
+ const lab={executed:'done',declined:'declined',refused:'refused by guardrail',awaiting:'waiting',recall:'recall window',expired:'expired',undone:'undone by you'};
+ $('recent').innerHTML=s.recent.length?`<table>${s.recent.map(a=>`<tr><td class="mut">#${a.id}</td><td><b>${esc(a.label)}</b> <span class="mut">for ${esc(a.who)}</span>${a.edited?' <span class="pill">you edited it</span>':''}</td>
+  <td><span class="badge ${({auto:'Auto',recall:'Recall',approval:'Asks',escalate:'Always',refuse:'Always'})[a.decision.route]}">${a.decision.route}</span></td>
+  <td>${lab[a.status]||a.status}${a.verified===true?' &middot; verified':a.verified===false?' &middot; <b style="color:var(--bad)">check failed</b>':''}</td>
+  <td style="text-align:right">${a.status==='executed'&&UNDO.includes(a.cls)?`<button class="sm" onclick="if(confirm('Undo this? It counts against the agent.'))post('/api/actions/${a.id}/undo')">Undo</button>`:''}</td></tr>`).join('')}</table>`:'<span class="mut">Nothing yet.</span>';
+ $('log').innerHTML=s.log.map(l=>`<div><span class="mut">${l.t}</span> ${esc(l.msg)}</div>`).join('')||'<div class="mut">Empty.</div>';
+ $('outh').textContent=s.email.live?'Outbox (live)':'Outbox (test mode: delivered to '+(s.email.test_inbox||'the test inbox')+')';
+ try{const au=await get('/api/audit?n=40');$('audit').innerHTML='<tr><th>Time</th><th>#</th><th>Event</th><th>Action</th><th>For</th><th>Route</th><th>Reason</th></tr>'+au.map(e=>`<tr><td class="mut">${esc(e.t)}</td><td>${e.id}</td>
+  <td>${esc(String(e.event).replace('owner_','you: ').replace('_',' '))}${e.verified===true?' &middot; verified':e.verified===false?' &middot; failed':''}${e.edited?' &middot; edited':''}</td><td>${esc(e.label)}</td><td>${esc(e.who)}</td><td>${esc(e.route)}</td><td class="mut">${esc(e.reason||e.why)}</td></tr>`).join('');
+  $('store').textContent=(await get('/api/storage')).backend}catch(e){}
+ try{const o=await get('/api/outbox');$('out').innerHTML=o.filter(m=>m.subject||m.intended_to).map(m=>`<div><span class="mut">${esc(m.t||'')}</span> <b>${esc(m.subject||'')}</b><br><span class="mut">for ${esc(m.intended_to)}${m.delivered_to?' &rarr; delivered to '+esc(m.delivered_to):m.error?' &middot; failed: '+esc(m.error):m.skipped?' &middot; '+esc(m.skipped):' &middot; not delivered (no mailbox)'}</span></div>`).join('')||'<div class="mut">No email yet.</div>'}catch(e){}
+ if(!supDone){supDone=true;renderSup()}
+}
+load().then(()=>{loadSide();loadTrain();loadOnce()});loadTargets();loadClients();setInterval(load,2000);setInterval(loadSide,8000);
 </script></div></body></html>
