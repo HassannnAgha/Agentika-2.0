@@ -21,7 +21,9 @@ def mail(sender, subject, body, att=None, auto=False, mid="<1@x>"):
 class FakeIMAP:
     def __init__(self, msgs): self.msgs, self.seen = msgs, []
     def select(self, box): return "OK", [b"1"]
-    def search(self, charset, crit): return "OK", [b" ".join(str(i + 1).encode() for i in range(len(self.msgs)))]
+    def search(self, charset, *crit):
+        self.criteria = crit
+        return "OK", [b" ".join(str(i + 1).encode() for i in range(len(self.msgs)))]
     def fetch(self, num, spec): return "OK", [(b"1 (RFC822)", self.msgs[int(num) - 1])]
     def store(self, num, op, flag): self.seen.append(int(num)); return "OK", []
     def logout(self): return "BYE", []
@@ -57,3 +59,13 @@ def test_html_only_mail_is_reduced_to_text():
     m = EmailMessage(); m["From"] = "a@b.example"; m["Subject"] = "Hi"; m["Message-ID"] = "<h@x>"
     m.set_content("<html><style>p{}</style><body><p>Our budget is agreed at PKR 200,000.</p></body></html>", subtype="html")
     p = inbox.parse_message(m.as_bytes()); assert "PKR 200,000" in p["body"] and "<p>" not in p["body"] and "style" not in p["body"].lower()
+
+def test_poll_only_asks_for_unseen_mail_since_a_date_never_the_whole_backlog(monkeypatch):
+    import datetime
+    monkeypatch.delenv("IMAP_SINCE", raising=False); monkeypatch.setenv("IMAP_FOLDER", "bizzii")
+    fake = FakeIMAP([]); folders = []
+    fake.select = lambda box: (folders.append(box), ("OK", [b"0"]))[1]
+    inbox.poll_once(server.process_inbound, imap_factory=lambda: fake)
+    assert fake.criteria == ("UNSEEN", "SINCE", datetime.date.today().strftime("%d-%b-%Y")) and folders == ["bizzii"]
+    monkeypatch.setenv("IMAP_SINCE", "2026-10-01"); assert inbox.since_date() == "01-Oct-2026"
+    monkeypatch.setenv("IMAP_SINCE", "garbage"); assert inbox.since_date() == datetime.date.today().strftime("%d-%b-%Y")

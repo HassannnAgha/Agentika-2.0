@@ -1,13 +1,24 @@
 """Mailbox poller: reads UNSEEN mail over IMAP (Gmail with an app password, or any IMAP server) and hands each message to the
 Operations agent. Reading never marks anything as answered and nothing is ever sent from here: the agent only PROPOSES.
-Set IMAP_HOST (imap.gmail.com), IMAP_USER, IMAP_PASSWORD. Off unless all three are set. Never use a personal inbox for a demo."""
-import os, re, base64, email, imaplib, threading, time, html as _html
+Set IMAP_HOST (imap.gmail.com), IMAP_USER, IMAP_PASSWORD. Off unless all three are set.
+
+Safety: it only reads UNSEEN mail received SINCE a date (IMAP_SINCE, default today) in one folder (IMAP_FOLDER, default INBOX), and at most
+`limit` messages per poll, so connecting a mailbox that already holds thousands of unread messages never sweeps through them.
+Best practice: a dedicated mailbox, or a Gmail label such as "bizzii" set as IMAP_FOLDER."""
+import os, re, base64, email, imaplib, threading, time, datetime, html as _html
 from email import policy
 from email.utils import parseaddr
 import persist
 
 STATE = {"last_poll": None, "last_result": None, "running": False}
 SKIP_SENDERS = re.compile(r"(no-?reply|donotreply|mailer-daemon|postmaster|notifications?@|bounce)", re.I)
+
+def since_date() -> str:
+    """IMAP date criterion, e.g. 16-Oct-2026. IMAP_SINCE (YYYY-MM-DD) or today: never the backlog."""
+    raw = os.getenv("IMAP_SINCE", "").strip()
+    try: d = datetime.date.fromisoformat(raw) if raw else datetime.date.today()
+    except ValueError: d = datetime.date.today()
+    return d.strftime("%d-%b-%Y")
 
 def configured() -> bool: return all(os.getenv(k) for k in ("IMAP_HOST", "IMAP_USER", "IMAP_PASSWORD"))
 
@@ -40,8 +51,8 @@ def poll_once(handler, limit: int = 10, imap_factory=None) -> dict:
     box = imap_factory() if imap_factory else imaplib.IMAP4_SSL(os.environ["IMAP_HOST"])
     try:
         if imap_factory is None: box.login(os.environ["IMAP_USER"], os.environ["IMAP_PASSWORD"])
-        box.select("INBOX")
-        typ, data = box.search(None, "UNSEEN")
+        box.select(os.getenv("IMAP_FOLDER", "INBOX"))
+        typ, data = box.search(None, "UNSEEN", "SINCE", since_date())
         for num in (data[0].split() if data and data[0] else [])[:limit]:
             typ, parts = box.fetch(num, "(BODY.PEEK[])")
             msg = parse_message(parts[0][1])
