@@ -77,7 +77,14 @@ def build(srv):
             if a != ag: continue
             ok, why, m = srv.gate.evaluate(a, cls); R = G.risk(cls)
             out.append({"action_type": cls, "earned": ok, "why": why, "W": round(m["W"], 3), "A": round(m["A"], 3), "D": round(m["D"], 3),
-                        "threshold": round(G.tau(R), 3), "verified_outcomes": m["nW"], "needs": G.n_min(R)})
+                        "threshold": round(G.tau(R), 3), "verified_outcomes": m["nW"], "needs": G.n_min(R),
+                        "path_to_autonomy": srv.autonomy_path(a, cls, full=False)["text"]})
         return {"agent": ag, "record": out, "note": "" if out else "no record yet: every action starts by asking the owner"}
+
+    @mcp.tool(description="Test the gate without doing anything: run one of the built-in attacks (injection, leak, price, recipient, no_basis, cold, publish) against the live business records and see every check and the route. Nothing is queued, sent or recorded as evidence.")
+    def test_attack(kind: str) -> dict:
+        try: r = srv.redteam(srv.Attack(kind=kind))
+        except srv.HTTPException as e: return {"error": str(e.detail)}
+        return {"attack": r["title"], "route": r["route"], "why": r["why"], "outcome": r["outcome"], "checks": r["steps"]}
 
     return mcp

@@ -52,6 +52,12 @@ const toGate = [
   ['/docs', '/docs'],                   // FastAPI interactive API docs
   ['/openapi.json', '/openapi.json'],
   ['/api/storage', '/api/storage'],
+  ['/api/autonomy', '/api/autonomy'],    // how close each agent is to acting alone
+  ['/api/redteam', '/api/redteam'],      // "try to break it": attacks run through the real gate, nothing sent
+  ['/api/approvers', '/api/approvers'],  // teammates the owner delegates decisions to
+  ['/api/plan/:path*', '/api/plan/:path*'],
+  ['/api/report.csv', '/api/report.csv'],
+  ['/report', '/report'],                // printable trust report
 ];
 
 /** @type {import('next').NextConfig} */

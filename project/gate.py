@@ -91,20 +91,28 @@ class Pair:
         self.dec = deque(maxlen=window)        # owner decisions: a | rp | rq
         self.out = deque(maxlen=window)        # verified outcomes: ok | fail
         self.granted = False
-    def counts(self):
-        c = {"a": 0, "rp": 0, "rq": 0, "ok": 0, "fail": 0}
-        for k in self.dec: c[k] += 1
-        for k in self.out: c[k] += 1
-        return c
-    def measures(self):
-        c = self.counts()
-        n = c["ok"] + c["fail"]
-        return {
-            "W": wilson(c["ok"], n), "nW": n,                                    # outcome competence
-            "A": wilson(c["a"] + c["rp"], c["a"] + c["rp"] + c["rq"]),           # appropriateness
-            "D": wilson(c["a"], c["a"] + c["rp"]),                               # delegation willingness
-            "counts": c,
-        }
+    def counts(self): return _counts(self.dec, self.out)
+    def measures(self): return _measures(self.dec, self.out)
+
+def _counts(dec, out):
+    c = {"a": 0, "rp": 0, "rq": 0, "ok": 0, "fail": 0}
+    for k in dec: c[k] += 1
+    for k in out: c[k] += 1
+    return c
+
+def _measures(dec, out):
+    c = _counts(dec, out)
+    n = c["ok"] + c["fail"]
+    return {
+        "W": wilson(c["ok"], n), "nW": n,                                    # outcome competence
+        "A": wilson(c["a"] + c["rp"], c["a"] + c["rp"] + c["rq"]),           # appropriateness
+        "D": wilson(c["a"], c["a"] + c["rp"]),                               # delegation willingness
+        "counts": c,
+    }
+
+def _clears(dec, out, R, granted):
+    m, th = _measures(dec, out), tau(R) - (DEAD_BAND if granted else 0)
+    return m["nW"] >= n_min(R) and min(m["W"], m["A"], m["D"]) >= th
 
 class Gate:
     def __init__(self, window=WINDOW, seed=None):
@@ -143,6 +151,26 @@ class Gate:
             return {"route": "approval", **base, "why": "audit sample of a promoted class"}
         v = CLASSES[cls]["sig"][3]
         return {"route": "auto" if v == "full" else "recall", **base}
+
+    def steps_to_earn(self, agent, cls, extra=(), cap=60):
+        """How many more clean runs (an owner approval plus a verified outcome) until all three measures clear tau, after the
+        hypothetical events in `extra` (("dec", "a"|"rp"|"rq") or ("out", "ok"|"fail")). 0 = earned. None = not within `cap`
+        runs, or never (a floor rule). Simulated on copies of the windows, so window eviction is exact. Changes nothing."""
+        if floor_rule(cls, {}): return None
+        R, p = risk(cls), self.pair(agent, cls)
+        dec, out = deque(p.dec, maxlen=self.window), deque(p.out, maxlen=self.window)
+        for kind, v in extra: (dec if kind == "dec" else out).append(v)
+        for k in range(cap + 1):
+            if _clears(dec, out, R, p.granted): return k
+            dec.append("a"); out.append("ok")
+        return None
+
+    def what_if(self, agent, cls):
+        """Runs to go now, and after each answer the owner could give to the action in front of them."""
+        return {"now": self.steps_to_earn(agent, cls),
+                "approve": self.steps_to_earn(agent, cls, [("dec", "a"), ("out", "ok")]),
+                "preference": self.steps_to_earn(agent, cls, [("dec", "rp")]),
+                "quality": self.steps_to_earn(agent, cls, [("dec", "rq")])}
 
     def record_decision(self, agent, cls, kind):
         """kind: approve | preference (sound, but I'd rather do it) | quality (content/timing wrong)"""

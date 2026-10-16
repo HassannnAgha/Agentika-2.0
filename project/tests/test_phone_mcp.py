@@ -106,6 +106,9 @@ def test_any_ai_agent_can_run_through_the_gate_over_mcp():
         assert rec[0]["action_type"] == "reply_to_client" and rec[0]["verified_outcomes"] == 1 and rec[0]["earned"] is False
         own = next(x for x in server.state()["classes"] if x["cls"] == "reply_to_client")["counts"]
         assert own["a"] == 6                                                            # the built-in agent's record was not touched
+        assert "path_to_autonomy" in rec[0]
+        atk = tool(mc, "test_attack", kind="injection")                                 # an outside agent can probe the gate, harmlessly
+        assert atk["route"] == "refuse" and any(not c["ok"] for c in atk["checks"])
 
 def test_from_the_phone_the_owner_can_edit_explain_and_grant_autonomy(live):
     import learning
