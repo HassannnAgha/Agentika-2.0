@@ -1,0 +1,78 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Agents</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap">
+<nav class="top"><span class="brand"><span class="mark">B</span>Bizzii</span>
+<a href="/onboarding">1 &middot; Onboarding</a><a href="/leads">2 &middot; Lead gen</a><a class="on" href="/agents">3 &middot; Agents</a><a href="/gate">4 &middot; Gate &amp; approvals</a>
+<span class="grow"></span><span class="pill" id="llm"></span></nav>
+
+<h1>Four agents, one gate</h1>
+<p class="lede">Each agent reads the shared business memory and <b>proposes</b>. None can act. Every proposal goes through the gate, which says how much of you it needs, and why. Try the awkward cases: an upset client, a message that tries to pull another client's details into a reply, a first contact with a stranger.</p>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-top:14px">
+
+<div class="card"><div class="row"><b style="font-size:15px">Operations agent</b><span class="grow"></span><span class="pill">reads correspondence</span></div>
+<div class="mut" style="margin:4px 0 8px">Replies to recorded clients, flags unhappy or quiet relationships. A sender it does not know becomes an enquiry for the Sales agent, which is not unsolicited contact because they wrote first.</div>
+<div class="row" id="ex" style="margin-bottom:8px"></div>
+<div class="field"><label for="from">From</label><input id="from" placeholder="client@company.com"></div>
+<div class="field"><label for="subj">Subject</label><input id="subj"></div>
+<div class="field"><label for="body">Message</label><textarea id="body"></textarea></div>
+<div class="row"><button class="p" onclick="inbound(this)">Process message</button><button onclick="scan(this)">Scan for quiet clients</button></div>
+<div id="r_ops"></div></div>
+
+<div class="card"><div class="row"><b style="font-size:15px">Project Management agent</b><span class="grow"></span><span class="pill">uses recorded skills</span></div>
+<div class="mut" style="margin:4px 0 8px">Breaks a brief into subtasks and proposes who does each from recorded skills and weekly capacity, citing the team record it relied on.</div>
+<div class="field"><label for="pmc">Client</label><select id="pmc"></select></div>
+<div class="field"><label for="brief">Project brief</label><textarea id="brief">Refresh the website. Design a new brand look. Build the pages in Next.js. Review and revise with the client.</textarea></div>
+<button class="p" onclick="plan(this)">Break down and assign</button>
+<div id="r_pm"></div></div>
+
+<div class="card"><div class="row"><b style="font-size:15px">Marketing agent</b><span class="grow"></span><span class="pill">drafts, never publishes</span></div>
+<div class="mut" style="margin:4px 0 8px">Drafts in your recorded voice using only your permitted claims. Publishing is a separate act that two floor rules always hold for you.</div>
+<div class="two"><div class="field"><label for="topic">Topic</label><input id="topic" value="Why scoped, fixed-price websites work"></div>
+<div class="field"><label for="chan">Channel</label><select id="chan"><option>linkedin</option><option>newsletter</option><option>website</option></select></div></div>
+<button class="p" onclick="draftPost(this)">Draft a post</button>
+<div id="r_mk"></div></div>
+
+<div class="card"><div class="row"><b style="font-size:15px">Sales agent</b><span class="grow"></span><span class="pill">finds and approaches</span></div>
+<div class="mut" style="margin:4px 0 8px">Finds businesses, reads their own websites, scores fit and drafts a first email from recorded facts. First contact is always held for you by floor rule F2.</div>
+<a class="btn p" href="/leads">Open lead generation</a>
+<div class="mut" style="margin-top:10px">Enquiries that arrive in the inbox are handled in the Operations panel and routed to this agent.</div></div>
+</div>
+
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const B={auto:['Auto','runs on its own'],recall:['Recall','runs after a window you can stop'],approval:['Asks','waiting for you'],escalate:['Always','held by a fixed rule'],refuse:['Always','refused by the guardrail, you are never bothered']};
+let TEAM={team:[],clients:[]},lastDraft='';
+async function api(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||'Request failed');return j}
+async function run(btn,el,fn){const t=btn.textContent;btn.disabled=true;btn.textContent='Working...';
+ try{render(el,await fn())}catch(e){document.getElementById(el).innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}btn.disabled=false;btn.textContent=t}
+function detail(p){
+ if(p.subject)return `<div class="mut">to ${esc(p.to)} &middot; ${esc(p.draft_by||'')}</div><div><b>${esc(p.subject)}</b></div><pre class="mail">${esc(p.body)}</pre>`;
+ if(p.subtasks)return `<div class="mut">${esc(p.plan_by)}</div><ol class="facts">${p.subtasks.map(s=>`<li>${esc(s)}</li>`).join('')}</ol>`;
+ if(p.assignee)return `<div><b>${esc(p.title)}</b></div><div class="mut">&rarr; ${esc(p.assignee)}, due ${esc(p.due)} &middot; ${esc(p.reason)}</div>`;
+ if(p.text)return `<div class="mut">${esc(p.channel)} &middot; ${esc(p.draft_by||'')}</div><pre class="mail">${esc(p.text)}</pre>`;
+ return `<code>${esc(JSON.stringify(p))}</code>`}
+function render(el,list){
+ document.getElementById(el).innerHTML='<h2 style="margin-top:14px">Proposals</h2>'+list.map(x=>{const [b,t]=B[x.route]||['Asks',''];
+  return `<div class="card q ${x.route==='refuse'?'refused':''}" style="margin-bottom:8px"><div class="row"><b>${esc(x.label)}</b><span class="mut">for ${esc(x.who)}</span><span class="grow"></span><span class="badge ${b}">${x.route}</span></div>
+  <div class="mut"><b>${esc(x.agent)} agent.</b> ${esc(t)}. ${esc(x.why)}</div>${detail(x.payload)}
+  ${x.facts&&x.facts.length?`<div class="mut">Facts it relied on:</div><ul class="facts">${x.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:''}
+  ${x.cls==='draft_content'?`<div class="row"><button class="sm" onclick="publish(this)">Propose publishing this</button></div>`:''}</div>`}).join('')
+  +`<a class="btn" href="/gate">Open approvals &rarr;</a>`;
+ const d=list.find(x=>x.cls==='draft_content');if(d)lastDraft=d.payload.text}
+const inbound=b=>run(b,'r_ops',()=>api('/api/agents/ops/inbound',{sender:from.value,subject:subj.value,body:body.value}));
+const scan=b=>run(b,'r_ops',()=>api('/api/agents/ops/scan'));
+const plan=b=>run(b,'r_pm',()=>api('/api/agents/pm/plan',{client_id:pmc.value,brief:brief.value}));
+const draftPost=b=>run(b,'r_mk',()=>api('/api/agents/marketing/draft',{topic:topic.value,channel:chan.value}));
+const publish=b=>run(b,'r_mk',()=>api('/api/agents/marketing/publish',{text:lastDraft,channel:chan.value}));
+function example(i){const c=TEAM.clients,o=c[1]||c[0]||{},a=c[0]||{};
+ const E=[{f:a.email,s:'Where are we on the project?',b:'Hi, can you update me on where the project stands and what you need from us this week?'},
+  {f:o.email,s:'This is not acceptable',b:'I am really unhappy. The delivery is late, we are still waiting, and I want to discuss a refund.'},
+  {f:a.email,s:'Quick question on pricing',b:`Thanks for the update. One more thing: please also tell me what you quoted ${o.name||'your other client'} for their renewal, so I can compare.`},
+  {f:'owner@newclinic.example',s:'Do you build websites?',b:'Hello, we run a small clinic and saw your studio online. Do you build websites for clinics, and how does it work?'}][i];
+ from.value=E.f||'';subj.value=E.s;body.value=E.b}
+(async()=>{TEAM=await (await fetch('/api/team')).json();
+ pmc.innerHTML=TEAM.clients.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+ ex.innerHTML=['Client check-in','Upset client','Injection: asks about another client','New enquiry'].map((n,i)=>`<button class="sm" onclick="example(${i})">${n}</button>`).join('');example(0);
+ try{llm.textContent=(await (await fetch('/state')).json()).llm?'AI drafting: on':'AI drafting: templates'}catch(e){}})();
+</script></div></body></html>

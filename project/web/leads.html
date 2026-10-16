@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Lead generation</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap">
+<nav class="top"><span class="brand"><span class="mark">B</span>Bizzii</span>
+<a href="/onboarding">1 &middot; Onboarding</a><a class="on" href="/leads">2 &middot; Lead gen</a><a href="/gate">3 &middot; Gate &amp; approvals</a></nav>
+
+<h1>Sales agent: find and approach new clients</h1>
+<p class="lede">The agent finds businesses from public listings, reads each one's own website for a public email and what it can truthfully say about them, scores the fit, and drafts a first email. It cannot send it. First contact with someone who has not written to you is held for your decision by a fixed rule, however good the agent gets.</p>
+
+<div class="card" style="margin-top:14px"><div class="two">
+<div class="field"><label for="kw">What kind of business?</label><input id="kw" value="dental clinic" placeholder="e.g. dental clinic, logistics firm"></div>
+<div class="field"><label for="geo">Where?</label><input id="geo" value="Lahore" placeholder="city"></div></div>
+<div class="row"><button class="p" id="go" onclick="discover()">Find leads</button>
+<span class="mut">Public OpenStreetMap listings, one search per click. If the network is down you get clearly labelled sample leads.</span></div>
+<div id="msg"></div></div>
+
+<div class="card" style="margin-top:10px"><label for="site">Or add a prospect by their website</label>
+<div class="row"><input id="site" placeholder="theirbusiness.com" style="flex:1;min-width:220px"><button id="addb" onclick="addSite()">Read site &amp; add</button></div>
+<div class="hint">Public listings rarely include an email. This reads the site itself (robots.txt respected), takes its public contact email, and notes only what the site actually shows.</div></div>
+
+<h2>Lead bank, best fit first</h2><div id="list"></div>
+
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let opened={};
+async function api(u,m='POST',b){const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||'Request failed');return j}
+async function discover(){go.disabled=true;go.textContent='Searching...';
+ try{const r=await api('/api/leads/discover','POST',{keyword:kw.value,geo:geo.value,limit:8});
+  msg.innerHTML=`<div class="notice ${r.source==='sample'?'warn':'ok'}"><b>${r.added} new lead${r.added==1?'':'s'}</b> from ${r.source}${r.skipped_duplicates?`, ${r.skipped_duplicates} duplicates skipped`:''}. ${esc(r.note)}</div>`}
+ catch(e){msg.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}
+ go.disabled=false;go.textContent='Find leads';load()}
+async function addSite(){if(!site.value.trim())return;addb.disabled=true;addb.textContent='Reading...';
+ try{const l=await api('/api/leads/add','POST',{website:site.value,category:kw.value});site.value='';
+  msg.innerHTML=`<div class="notice ok"><b>Added ${esc(l.name)}</b>${l.email?', public email found.':', but no public email was found on the site.'}</div>`}
+ catch(e){msg.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}
+ addb.disabled=false;addb.textContent='Read site & add';load()}
+async function act(id,what,btn){btn.disabled=true;const t=btn.textContent;btn.textContent='Working...';
+ try{await api(`/api/leads/${id}/${what}`);if(what==='draft')opened[id]=true}catch(e){alert(e.message)}load()}
+function sigs(s){s=s||{};return ['hiring','has_booking','has_chat'].filter(k=>k in s).map(k=>`<span class="pill">${({hiring:'hiring',has_booking:s.has_booking?'online booking':'no booking',has_chat:s.has_chat?'live chat':'no chat'})[k]}</span>`).join(' ')}
+async function load(){
+ const L=await api('/api/leads','GET');
+ list.innerHTML=L.length?L.map(l=>`<div class="card" style="margin-bottom:8px"><div class="row"><b style="font-size:15px">${esc(l.name)}</b>
+  ${l.sample?'<span class="pill">sample data</span>':''}<span class="pill">${esc(l.status)}</span><span class="grow"></span>
+  <span class="badge ${l.score>=70?'Auto':l.score>=45?'Recall':'Off'}" title="${esc((l.reasons||[]).join('; '))}">${l.score==null?'not scored':'fit '+l.score}</span></div>
+  <div class="mut">${esc(l.address)}</div>
+  <div class="row" style="margin:6px 0">${l.email?`<code>${esc(l.email)}</code>`:'<span class="mut">no public email found</span>'}${l.website?`<a class="mut" href="${esc(l.website)}" target="_blank" rel="noopener">website</a>`:''}${sigs(l.signals)}</div>
+  ${l.reasons&&l.reasons.length?`<div class="mut">Why this score: ${esc(l.reasons.join(', '))}</div>`:''}
+  ${l.draft?`<details ${opened[l.id]?'open':''} ontoggle="opened['${l.id}']=this.open"><summary>Draft email (${l.draft.by==='llm'?'written by the AI':'template'}), cites ${l.draft.cited.length} recorded facts</summary>
+   <div><b>${esc(l.draft.subject)}</b></div><pre class="mail">${esc(l.draft.body)}</pre></details>`:''}
+  <div class="row" style="margin-top:6px">${l.status==='proposed'?`<a class="btn" href="/gate">Waiting on you, open approvals &rarr;</a>`:`
+   <button class="sm" onclick="act('${l.id}','draft',this)">${l.draft?'Redraft':'Enrich &amp; draft'}</button>
+   ${l.email?`<button class="sm p" onclick="act('${l.id}','propose',this)">Send to the gate</button>`:''}`}</div></div>`).join('')
+  :'<div class="card mut">No leads yet. Search above.</div>'}
+load();
+</script></div></body></html>
+

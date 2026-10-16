@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Risk-Trust Gate</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"></head><body><div class="wrap">
+<nav class="top"><span class="brand"><span class="mark">B</span>Bizzii</span>
+<a href="/onboarding">1 &middot; Onboarding</a><a href="/leads">2 &middot; Lead gen</a><a class="on" href="/gate">3 &middot; Gate &amp; approvals</a>
+<span class="grow"></span><span class="pill" id="biz"></span><span class="pill" id="llm"></span></nav>
+
+<h1>Human + AI: better together</h1>
+<p class="lede">Agents propose. The Risk-Trust Gate decides how much a human has to be involved, from risk and the agent's own track record, and says why. The human stays in the loop exactly as much as the evidence requires, and that amount shrinks as the agent proves itself.</p>
+<div id="inactive"></div>
+
+<div class="row" style="margin-top:12px"><span class="mut">Demo controls:</span>
+<button class="sm" onclick="post('/reset?seed=true')">Reset gate (seeded history)</button>
+<button class="sm" onclick="post('/reset?seed=false')">Reset gate (empty history)</button>
+<button class="sm q" onclick="if(confirm('Reset gate, profile, leads and outbox to the demo?'))post('/reset?seed=true&full=true')">Reset everything</button></div>
+<div class="mut" style="margin-top:4px">History in seeded mode is seeded for the demo. The live flip and the refusals run for real.</div>
+
+<h2>Fire a scenario</h2><div class="row">
+<button onclick="sc('new_lead')">Lead gen: first outreach</button><button onclick="sc('task')">PM: assign a subtask</button>
+<button onclick="sc('crm')">Ops: flag quiet client</button><button onclick="sc('followup')">Ops: reply to client</button>
+<button onclick="sc('assign')">PM: reassign stalled task</button><button onclick="sc('draft')">Marketing: draft</button>
+<button onclick="sc('publish')">Marketing: publish</button><button onclick="sc('poisoned')">Poisoned email (leaks another client)</button></div>
+
+<h2>Waiting on you</h2><div id="pend" class="grid"></div>
+<h2>Recent decisions</h2><div id="recent" class="card"></div>
+<h2>What the gate would do right now</h2><div id="cls"></div>
+<h2>Audit trail <span class="mut" style="text-transform:none;letter-spacing:0">&middot; every proposal, decision and execution, with the route and the reason (stored in <span id="store">...</span>)</span></h2>
+<div class="card scroll" style="max-height:340px;overflow-y:auto"><table id="audit"></table></div>
+<div class="grid" style="margin-top:6px">
+<div><h2>Decision log</h2><div id="log" class="card log"></div></div>
+<div><h2>Outbox (test only, nothing reaches a real address)</h2><div id="out" class="card log"></div></div></div>
+
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function post(u,b){try{const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
+ if(!r.ok){const e=await r.json().catch(()=>({}));alert(e.detail||'Request failed')}}catch(e){alert('Network error')}load()}
+const sc=n=>post('/scenario/'+n), dec=(id,kind)=>post('/decision',{id,kind});
+function bar(label,v,t){return `<div class="mut">${label} ${v.toFixed(2)} / ${t.toFixed(2)}</div><div class="bar"><div class="fill" style="width:${v*100}%;background:${v>=t?'var(--ok)':'var(--blue)'}"></div><div class="tau" style="left:${t*100}%"></div></div>`}
+function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earned)return['Asks','Asks first: '+c.why];
+ return c.sig[3]==='full'?['Auto','Runs without asking']:['Recall','Runs after a recall window you can stop']}
+function mail(p){return p&&p.subject?`<div class="mut">to ${esc(p.to)}</div><div><b>${esc(p.subject)}</b></div><pre class="mail">${esc(p.body)}</pre>`:`<code>${esc(JSON.stringify(p))}</code>`}
+const openState={};
+async function load(){
+ let s;try{s=await (await fetch('/state')).json()}catch(e){return}
+ biz.textContent=s.business+(s.profile_source==='onboarding'?' (your onboarding)':' (sample data)');
+ llm.textContent=s.llm?'AI drafting: on':'AI drafting: templates';
+ inactive.innerHTML=Object.entries(s.agents).filter(([k,v])=>!v.active).map(([k,v])=>`<div class="notice warn"><b>${esc(s.agent_names[k])} agent is inactive.</b> ${v.missing.join(', ')} was not connected during onboarding, so its proposals are refused.</div>`).join('');
+ const groups={};s.classes.forEach(c=>(groups[c.agent]??=[]).push(c));
+ cls.innerHTML=Object.entries(groups).map(([ag,list])=>{
+  if(!(ag in openState))openState[ag]=list.some(c=>c.counts.a+c.counts.ok+c.counts.rp+c.counts.rq>0||c.floor);
+  return `<details class="card" style="margin-bottom:8px" ${openState[ag]?'open':''} ontoggle="openState['${ag}']=this.open"><summary><b>${esc(s.agent_names[ag])} agent</b> <span class="mut">&middot; ${list.length} kinds of action, ${list.filter(c=>c.earned).length} earned</span></summary>
+  <div class="scroll"><table><tr><th>Action</th><th>Today</th><th>Risk</th><th style="min-width:130px">W competence</th><th style="min-width:130px">A appropriate</th><th style="min-width:130px">D delegation</th><th>Evidence</th></tr>
+  ${list.map(c=>{const [b,t]=route(c);return `<tr><td><b>${esc(c.label)}</b>${c.extension?' <span class="pill">hackathon extension</span>':''}<div class="mut mono">${esc(c.cls)} &middot; ${c.sig.join(' / ')}</div></td>
+  <td><span class="badge ${b}">${b}</span><div class="mut" style="max-width:220px">${esc(t)}</div></td><td>${c.risk.toFixed(2)}</td>
+  <td>${bar('',c.W,c.tau)}</td><td>${bar('',c.A,c.tau)}</td><td>${bar('',c.D,c.tau)}</td>
+  <td class="mut">${c.nW}/${c.n_min} verified<br>ok ${c.counts.a} &middot; mine ${c.counts.rp} &middot; wrong ${c.counts.rq}</td></tr>`}).join('')}</table></div></details>`}).join('');
+ pend.innerHTML=s.pending.length?s.pending.map(a=>{const rc=a.status==='recall';
+  return `<div class="card q ${rc?'recall':''}"><div class="row"><b>${esc(a.label)}</b><span class="grow"></span>
+  <span class="badge ${rc?'Recall':a.decision.route==='escalate'?'Always':'Asks'}">${rc?'recall '+a.secs_left+'s':a.decision.route}</span></div>
+  <div class="mut">#${a.id} &middot; ${esc(a.agent)} agent &middot; for ${esc(a.who)}</div>
+  <div class="mut" style="margin:4px 0"><b>Why you are asked:</b> ${esc(a.decision.why)}</div>${mail(a.payload)}
+  ${a.facts.length?`<div class="mut">Facts it relied on:</div><ul class="facts">${a.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:''}
+  <div class="row">${rc?'':`<button class="p" onclick="dec(${a.id},'approve')">Approve</button>`}
+  <button onclick="dec(${a.id},'preference')">${rc?'Stop: ':''}Right, but I'd rather do it myself</button>
+  <button onclick="dec(${a.id},'quality')">${rc?'Stop: ':''}Wrong</button></div></div>`}).join(''):'<div class="mut">Nothing waiting.</div>';
+ const lab={executed:'executed',declined:'declined',refused:'refused by guardrail',awaiting:'waiting',recall:'recall window'};
+ recent.innerHTML=s.recent.length?`<table>${s.recent.map(a=>`<tr><td class="mut">#${a.id}</td><td><b>${esc(a.label)}</b> for ${esc(a.who)}</td>
+  <td><span class="badge ${({auto:'Auto',recall:'Recall',approval:'Asks',escalate:'Always',refuse:'Always'})[a.decision.route]}">${a.decision.route}</span></td>
+  <td>${lab[a.status]||a.status}${a.verified===true?' &middot; verified':a.verified===false?' &middot; <b style="color:var(--bad)">postcondition FAILED</b>':''}</td></tr>`).join('')}</table>`:'<span class="mut">Nothing yet.</span>';
+ log.innerHTML=s.log.map(l=>`<div><span class="mut">${l.t}</span> ${esc(l.msg)}</div>`).join('')||'<div class="mut">Empty.</div>';
+ try{const au=await (await fetch('/api/audit?n=40')).json();
+  audit.innerHTML='<tr><th>Time</th><th>#</th><th>Event</th><th>Action</th><th>For</th><th>Route</th><th>Risk</th><th>Reason</th></tr>'+au.map(e=>`<tr><td class="mut">${esc(e.t)}</td><td>${e.id}</td>
+   <td>${esc(e.event.replace('owner_','owner: '))}${e.verified===true?' &middot; verified':e.verified===false?' &middot; FAILED':''}</td><td>${esc(e.label)}</td><td>${esc(e.who)}</td><td>${esc(e.route)}</td><td>${e.risk}</td><td class="mut">${esc(e.why)}</td></tr>`).join('');
+  store.textContent=(await (await fetch('/api/storage')).json()).backend}catch(e){}
+ try{const o=await (await fetch('/api/outbox')).json();out.innerHTML=o.map(m=>`<div><span class="mut">${esc(m.t)}</span> to <code>${esc(m.intended_to)}</code>: ${esc(m.subject)}${m.delivered_to?' &rarr; delivered to test inbox':' (written to outbox only)'}</div>`).join('')||'<div class="mut">No email yet.</div>'}catch(e){}
+}
+load();setInterval(load,1000);
+</script></div></body></html>
