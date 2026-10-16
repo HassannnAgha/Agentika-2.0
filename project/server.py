@@ -17,7 +17,7 @@ from gate import Gate, risk, tau, n_min
 from catalogue import CLASSES, AGENT_OF, LABEL_OF, AGENT_NAMES, AGENT_NEEDS, HACKATHON_EXTENSIONS
 from executors import EXECUTORS, suppressed
 from store import STORE, agent_status, demo, email_configured
-import leadgen, crawl, llm, persist, agents, console_api, compare, inbox, learning
+import leadgen, crawl, llm, persist, agents, console_api, compare, inbox, learning, jira
 
 G.AUDIT_RATE = float(os.getenv("AUDIT_RATE", "0" if demo() else "0.1"))   # real: 10% of promoted actions still reach the owner
 RECALL_DEFAULT = 12                                     # demo: seconds a recall-route action waits for a Stop
@@ -703,7 +703,11 @@ def task_status(tid: int, s: TaskStatus):
     if s.status not in ("open", "in_progress", "complete"): raise HTTPException(400, "status must be open, in_progress or complete")
     tasks = list(persist.get("tasks", []) or []); t = next((x for x in tasks if x["id"] == tid), None)
     if not t: raise HTTPException(404, "unknown task")
+    if t.get("jira") and jira.configured() and not jira.set_status(t["jira"], s.status): raise HTTPException(502, f"Jira could not move {t['jira']} to {s.status}")
     t["status"], t["updated"] = s.status, time.time(); persist.put("tasks", tasks); return t
+
+@app.get("/api/jira/status")
+def jira_status(): return {"configured": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None}
 
 @app.post("/api/demo/age_tasks")
 def age_tasks(days: float = 10):

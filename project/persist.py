@@ -4,15 +4,22 @@ fails. The app must never crash because the database is missing or slow, so ever
 Reads are served from memory after the first load and writes go to the database from a background thread
 (write-behind), so the UI never waits on a round trip to the database. Set the URL as an environment variable
 (.env locally, the Variables tab on Alternate Clouds). Never commit it."""
-import os, json, time, queue, threading
+import os, re, json, time, queue, threading
 from pathlib import Path
+
+def env_value(v: str) -> str:
+    """A .env value as the shell would read it: surrounding quotes removed, and an unquoted value cut at " # comment",
+    so a line copied from .env.example such as `IMAP_FOLDER=INBOX    # or a Gmail label` means INBOX."""
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'": return v[1:-1]
+    return re.sub(r"(^|\s+)#.*$", "", v).strip()
 
 def _load_dotenv():
     p = Path(__file__).parent / ".env"
     if p.exists() and not os.environ.get("BIZZII_NO_DOTENV"):       # tests set this so a developer's real keys never leak in
         for line in p.read_text(encoding="utf-8").splitlines():
             k, _, v = line.strip().partition("=")
-            if k and not k.startswith("#"): os.environ.setdefault(k, v)   # a variable already set (even empty) wins
+            if k and not k.startswith("#"): os.environ.setdefault(k.strip(), env_value(v))   # a variable already set (even empty) wins
 _load_dotenv()
 
 DATA = Path(os.getenv("DATA_DIR", "data")); DATA.mkdir(exist_ok=True)

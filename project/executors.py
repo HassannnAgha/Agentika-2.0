@@ -6,7 +6,7 @@ Safety for the hackathon: email NEVER goes to a real prospect or client. It is w
 SMTP_* and TEST_INBOX are set, also delivered to TEST_INBOX (never to the payload's address). Suppressed addresses are skipped."""
 import os, time, random, smtplib, ssl, hmac, hashlib, base64
 from email.message import EmailMessage
-import persist
+import persist, jira
 from store import STORE
 from catalogue import CLASSES
 
@@ -108,14 +108,20 @@ def _task(p):
     row = {"id": len(tasks) + 1, "title": p.get("title") or p.get("task"), "assignee": p.get("assignee"), "due": p.get("due"), "client": p.get("client", ""),
            "client_id": p.get("client_id", ""), "hours": p.get("hours", 8), "reason": p.get("reason"), "status": "open", "created": now, "updated": now}
     if _fail(): return False
+    if jira.configured():                                   # real task tool: the issue must exist and read back with this title
+        row["jira"] = jira.create(row)
+        if not row["jira"]: return False
     tasks.append(row); persist.put("tasks", tasks); p["_task_id"] = row["id"]
-    return any(t["id"] == row["id"] and t["title"] == row["title"] and t["assignee"] == row["assignee"] for t in persist.get("tasks", []))
+    if row.get("jira"): p["_jira"] = row["jira"]
+    ok = any(t["id"] == row["id"] and t["title"] == row["title"] and t["assignee"] == row["assignee"] for t in persist.get("tasks", []))
+    return ok and (not row.get("jira") or jira.issue(row["jira"])["summary"] == row["title"][:250])
 
 def _reassign(p):
     """reassign_stalled_task: hand an existing task to someone else."""
     tasks = list(persist.get("tasks", []))
     t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
     if not t or _fail(): return False
+    if t.get("jira") and jira.configured() and not jira.reassign(t["jira"], t.get("assignee"), p.get("to")): return False
     t.setdefault("history", []).append({"from": t.get("assignee"), "to": p.get("to"), "at": time.time()})
     t["assignee"], t["updated"] = p.get("to"), time.time(); persist.put("tasks", tasks)
     return next((x for x in persist.get("tasks", []) if x["id"] == p.get("task_id")), {}).get("assignee") == p.get("to")
@@ -125,6 +131,7 @@ def _task_status(p):
     tasks = list(persist.get("tasks", []))
     t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
     if not t or _fail(): return False
+    if t.get("jira") and jira.configured() and not jira.set_status(t["jira"], p.get("status", t["status"])): return False
     p["_status_was"] = t["status"]; t["status"], t["updated"] = p.get("status", t["status"]), time.time(); persist.put("tasks", tasks)
     return next((x for x in persist.get("tasks", []) if x["id"] == p.get("task_id")), {}).get("status") == p.get("status")
 
@@ -191,14 +198,18 @@ def _drop(key, rid):
 def undo(cls, p):
     """Reverse what an executor did, using what it remembered. Returns True only if the record is back as it was."""
     try:
-        if cls == "assign_subtask": return _drop("tasks", p.get("_task_id"))
+        if cls == "assign_subtask":
+            if p.get("_jira"): return False                  # the issue lives in Jira and jira.py has no delete: undo there by hand
+            return _drop("tasks", p.get("_task_id"))
         if cls == "reassign_stalled_task":
             tasks = list(persist.get("tasks", []) or []); t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
             if not t or t.get("assignee") != p.get("to"): return False
+            if t.get("jira") and jira.configured() and not jira.reassign(t["jira"], p.get("to"), p.get("from")): return False
             t["assignee"], t["updated"] = p.get("from"), time.time(); persist.put("tasks", tasks); return True
         if cls == "update_task_record":
             tasks = list(persist.get("tasks", []) or []); t = next((x for x in tasks if x["id"] == p.get("task_id")), None)
             if not t or "_status_was" not in p: return False
+            if t.get("jira") and jira.configured() and not jira.set_status(t["jira"], p["_status_was"]): return False
             t["status"] = p["_status_was"]; persist.put("tasks", tasks); return True
         if cls == "update_client_record": return "_was" in p and STORE.update_client(p["client"], p["field"], p["_was"])
         if cls == "flag_relationship_risk":

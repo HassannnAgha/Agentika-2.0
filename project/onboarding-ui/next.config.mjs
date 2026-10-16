@@ -46,6 +46,7 @@ const toGate = [
   ['/api/demo/:path*', '/api/demo/:path*'],
   ['/api/compare', '/api/compare'],
   ['/api/inbox/:path*', '/api/inbox/:path*'],
+  ['/api/jira/:path*', '/api/jira/:path*'],
   ['/api/console/:path*', '/api/console/:path*'],
   ['/agents', '/agents'],               // throwaway test harness page for the agents
   ['/docs', '/docs'],                   // FastAPI interactive API docs

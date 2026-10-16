@@ -4,7 +4,7 @@ import os
 
 os.environ["BIZZII_NO_DOTENV"] = "1"          # persist.py must not load the developer's .env
 for _k in list(os.environ):
-    if _k.startswith(("GROQ_", "IMAP_", "SMTP_", "SEND_LIVE", "TEST_INBOX", "APP_", "GEMINI_", "PUBLIC_URL", "UNSUB_", "LIVE_DAILY", "BUSINESS_")):
+    if _k.startswith(("GROQ_", "IMAP_", "SMTP_", "SEND_LIVE", "TEST_INBOX", "APP_", "GEMINI_", "PUBLIC_URL", "UNSUB_", "LIVE_DAILY", "BUSINESS_", "JIRA_")):
         os.environ.pop(_k)
 os.environ["DATABASE_URL"] = ""
 import tempfile
