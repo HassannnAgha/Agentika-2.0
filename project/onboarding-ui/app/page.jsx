@@ -70,7 +70,7 @@ export default function Landing() {
           <a href="#agents">Agents</a>
           <a href="#memory">Memory</a>
         </nav>
-        <Link href="/login" className="btn btn-primary btn-sm">Sign in</Link>
+        <a href="/gate" className="btn btn-primary btn-sm">Open the dashboard</a>
       </header>
 
       {/* ---------------- hero ---------------- */}
@@ -83,9 +83,9 @@ export default function Landing() {
             against what that agent has actually got right before.
           </p>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-            <Link href="/login" className="btn btn-primary">Sign in</Link>
-            <Link href="/app/queue" className="btn">
-              See the console <span aria-hidden="true">↗</span>
+            <a href="/gate" className="btn btn-primary">Open the dashboard</a>
+            <Link href="/onboarding" className="btn">
+              Set up a business <span aria-hidden="true">↗</span>
             </Link>
           </div>
         </div>
@@ -397,9 +397,9 @@ export default function Landing() {
               something because you would rather write it yourself says nothing about the agent, so
               it is not counted against it.
             </p>
-            <Link href="/app/agents" className="btn btn-sm">
-              See the measures <span aria-hidden="true">↗</span>
-            </Link>
+            <a href="/gate" className="btn btn-sm">
+              See the live measures <span aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
       </section>
@@ -408,9 +408,9 @@ export default function Landing() {
         <span className="brand-mark" aria-hidden="true">B</span>
         <span>Bizzii — final year project F26-068</span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 20 }}>
-          <Link href="/login">Sign in</Link>
-          <Link href="/app/queue">Console</Link>
-          <Link href="/flow">Navigation map</Link>
+          <a href="/gate">Dashboard</a>
+          <Link href="/onboarding">Setup</Link>
+          <a href="/report">Trust report</a>
         </span>
       </footer>
     </div>

@@ -122,18 +122,23 @@ def _worker():
 threading.Thread(target=_worker, daemon=True).start()
 
 # ---------------------------------------------------------------- key/value documents
+_ABSENT = object()                           # cached "no such key": this process is the only writer, so absence is as reliable as a value
+
 def get(key, default=None):
     with _lock:
-        if key in _kv: return _kv[key]
+        if key in _kv: return default if _kv[key] is _ABSENT else _kv[key]
     val, found = default, False
     box = {}
-    if _run(lambda c: box.update(r=c.execute("select value from kv where key=%s", (key,)).fetchone())) and box.get("r"):
+    asked = _run(lambda c: box.update(r=c.execute("select value from kv where key=%s", (key,)).fetchone()))
+    if asked and box.get("r"):
         val, found = box["r"][0], True
     if not found and (DATA / f"{key}.json").exists():
         try: val, found = json.loads((DATA / f"{key}.json").read_text(encoding="utf-8")), True
         except Exception: pass
     if found:
         with _lock: _kv[key] = val
+    elif asked or not URL:                   # only when the database really answered: an outage must never hide real data
+        with _lock: _kv[key] = _ABSENT
     return val
 
 def put(key, value):

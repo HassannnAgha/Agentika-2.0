@@ -21,6 +21,19 @@ def test_a_dropped_connection_is_reconnected_and_the_write_reaches_the_database(
     assert ok and second.rows.get("profile") == {"n": 1} and first.closed
     assert not (tmp_path / "profile.json").exists()
 
+def test_a_missing_key_costs_one_database_trip_but_an_outage_is_never_cached(monkeypatch, tmp_path):
+    calls = []
+    def answered(fn): calls.append(1); fn(type("C", (), {"execute": lambda self, *a: type("R", (), {"fetchone": lambda s: None})()})()); return True
+    monkeypatch.setattr(persist, "URL", "postgresql://x"); monkeypatch.setattr(persist, "DATA", tmp_path); monkeypatch.setattr(persist, "_kv", {})
+    monkeypatch.setattr(persist, "_run", answered)
+    assert persist.get("consent", {}) == {} and persist.get("consent", {}) == {} and len(calls) == 1      # the dashboard polls: one trip, not one per poll
+    persist._kv["supervision"] = persist._ABSENT
+    monkeypatch.setattr(persist, "_jobs", type("Q", (), {"put": lambda self, j: None})()); monkeypatch.setattr(persist, "_db", lambda: object())
+    persist.put("consent", {"a|b": "granted"}); assert persist.get("consent") == {"a|b": "granted"}
+    monkeypatch.setattr(persist, "_run", lambda fn: calls.append(1) or False)                          # database down
+    n = len(calls); persist.get("profile"); persist.get("profile")
+    assert len(calls) == n + 2 and "profile" not in persist._kv                                        # asked again next time, not cached as absent
+
 def test_if_the_database_stays_down_the_file_is_marked_and_synced_later(monkeypatch, tmp_path):
     monkeypatch.setattr(persist, "URL", "postgresql://x"); monkeypatch.setattr(persist, "DATA", tmp_path); monkeypatch.setattr(persist, "_UNSYNCED", set())
     persist._write_file("profile", json.dumps({"business": {"name": "Kept"}}))

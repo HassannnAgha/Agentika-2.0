@@ -62,6 +62,10 @@ const toGate = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // the FYP's static console mock-ups (sample data) are gone: old links land on the live dashboard
+  async redirects() {
+    return ['/login', '/app', '/app/:path*', '/flow'].map((source) => ({ source, destination: '/gate', permanent: false }));
+  },
   async rewrites() {
     return { beforeFiles: toGate.map(([source, dest]) => ({ source, destination: `${GATE}${dest}` })) };
   },
