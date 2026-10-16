@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fastn": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.live.fastn.ai/shttp"]
+    }
+  }
+}
