@@ -44,3 +44,17 @@ def test_no_key_means_no_call_at_all(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False); llm._dead.clear()
     monkeypatch.setattr(llm.httpx, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call")))
     assert llm.json_call("s", "u") is None and llm.available() is False
+
+def test_second_key_is_used_when_the_first_is_rate_limited(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "key-one"); monkeypatch.setenv("GROQ_API_KEY_2", "key-two"); monkeypatch.delenv("GROQ_MODEL", raising=False); llm._dead.clear(); used = []
+    def post(url, **kw):
+        k = kw["headers"]["Authorization"].split()[-1]; used.append(k); return R(429) if k == "key-one" else ok({"via": k})
+    monkeypatch.setattr(llm.httpx, "post", post)
+    assert llm.keys() == ["key-one", "key-two"] and llm.json_call("s", "u") == {"via": "key-two"} and used == ["key-one", "key-two"]
+
+def test_a_retired_model_is_skipped_for_every_key_not_retried_per_key(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "a"); monkeypatch.setenv("GROQ_API_KEY_2", "b"); monkeypatch.setenv("GROQ_MODEL", "gone/model"); llm._dead.clear(); calls = []
+    def post(url, **kw):
+        calls.append((kw["json"]["model"], kw["headers"]["Authorization"][-1])); return R(404) if kw["json"]["model"] == "gone/model" else ok({"ok": 1})
+    monkeypatch.setattr(llm.httpx, "post", post)
+    assert llm.json_call("s", "u") == {"ok": 1} and calls[0] == ("gone/model", "a") and calls[1][0] == "openai/gpt-oss-120b"

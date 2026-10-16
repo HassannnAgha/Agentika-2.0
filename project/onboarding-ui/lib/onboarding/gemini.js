@@ -1,5 +1,6 @@
 import 'server-only';
 import { ApiError, GoogleGenAI } from '@google/genai';
+import { groqExtract, groqKeys, textOnly } from './groq';
 
 /**
  * The one place onboarding talks to Gemini.
@@ -81,9 +82,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {object} args.schema JSON Schema the reply must match
  * @param {string} args.task   What to extract, in plain words
  */
-export async function extractJSON({ parts, schema, task }) {
+async function geminiExtract({ parts, schema, task }) {
   return slot(async () => {
     let lastWait = null;
+    let sawBusy = false;
     for (const id of MODELS()) {
       if ((exhaustedUntil.get(id) ?? 0) > Date.now()) continue;
       try {
@@ -92,7 +94,12 @@ export async function extractJSON({ parts, schema, task }) {
         if (!(e instanceof QuotaExhausted)) throw e;
         exhaustedUntil.set(id, Date.now() + e.waitSec * 1000);
         lastWait = lastWait == null ? e.waitSec : Math.min(lastWait, e.waitSec);
+        sawBusy = sawBusy || e.busy;
       }
+    }
+    if (sawBusy) {
+      // Google answered 503 on every model we tried: a temporary overload, not a spent quota
+      throw new ExtractionError('Gemini is overloaded right now. Wait a minute and read it again, or fill the screens in by hand.', { status: 503 });
     }
     const soonest = Math.min(...MODELS().map((m) => exhaustedUntil.get(m) ?? Infinity));
     const wait = Number.isFinite(soonest) ? (soonest - Date.now()) / 1000 : lastWait ?? 3600;
@@ -105,9 +112,10 @@ export async function extractJSON({ parts, schema, task }) {
 }
 
 class QuotaExhausted extends Error {
-  constructor(waitSec) {
-    super('quota exhausted');
+  constructor(waitSec, busy = false) {
+    super(busy ? 'model busy' : 'quota exhausted');
     this.waitSec = waitSec;
+    this.busy = busy; // true: a 503 overload that outlasted the retries, so move on to the next model
   }
 }
 
@@ -150,13 +158,37 @@ async function callModel(id, { parts, schema, task }) {
         }
         throw new QuotaExhausted(60);
       }
-      if (status === 503 && attempt < 3) {
-        await sleep(4000 * 2 ** attempt);
-        continue;
+      if (status === 503) {
+        if (attempt < 2) {
+          await sleep(3000 * 2 ** attempt);
+          continue;
+        }
+        throw new QuotaExhausted(30, true); // still overloaded after the retries: let the next model try
       }
       if (status === 400 || status === 403) throw new ExtractionError(`Gemini rejected the request: ${e.message}`, { status: 502 });
       if (e instanceof SyntaxError) throw new ExtractionError('Gemini returned malformed JSON for this source.');
       throw e;
     }
+  }
+}
+
+/**
+ * Gemini first. If it cannot answer (not configured, overloaded, quota spent, request rejected) and the material is text,
+ * the same extraction is retried on Groq. A PDF goes to Gemini only, so its original error is what the owner sees.
+ */
+export async function extractJSON(args) {
+  try {
+    return await geminiExtract(args);
+  } catch (e) {
+    const gemini429or5xx = e instanceof ExtractionError ? [429, 502, 503].includes(e.status) : true;
+    if (gemini429or5xx && groqKeys().length && textOnly(args.parts)) {
+      try {
+        console.warn('Gemini unavailable, extracting with Groq:', e.message?.slice(0, 80));
+        return await groqExtract({ ...args, system: SYSTEM });
+      } catch (g) {
+        console.error('Groq fallback failed too:', g.message);
+      }
+    }
+    throw e;
   }
 }

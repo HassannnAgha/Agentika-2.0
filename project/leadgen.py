@@ -3,7 +3,7 @@ Everything here PROPOSES. Sending goes through the gate (class send_lead_outreac
 
 Discovery uses OpenStreetMap Nominatim (public data, no key, 1 request per search). If the network or the search
 fails it falls back to clearly labelled SAMPLE leads so the demo never depends on Wi-Fi. A lead's facts are only
-what a source actually said: nothing is invented (the same rule as the BinaryNext scraper this was adapted from)."""
+what a source actually said: nothing is invented."""
 import os, json, re, uuid, time, threading
 from urllib.parse import urlparse
 import httpx

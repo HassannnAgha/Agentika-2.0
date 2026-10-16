@@ -9,7 +9,7 @@ from pathlib import Path
 
 def _load_dotenv():
     p = Path(__file__).parent / ".env"
-    if p.exists():
+    if p.exists() and not os.environ.get("BIZZII_NO_DOTENV"):       # tests set this so a developer's real keys never leak in
         for line in p.read_text(encoding="utf-8").splitlines():
             k, _, v = line.strip().partition("=")
             if k and not k.startswith("#"): os.environ.setdefault(k, v)   # a variable already set (even empty) wins

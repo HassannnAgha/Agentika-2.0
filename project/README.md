@@ -40,6 +40,9 @@ One container, port **8000** (`Dockerfile`, `start.sh`). Set **PORT = 8000** on 
 `Application startup complete`. One Python worker on purpose: gate evidence and recall timers are in memory, and a
 redeploy resets the demo to its seeded state.
 
+## Access
+Set APP_PASSWORD (and optionally APP_USER, default judge) on the deployed service: everything sits behind HTTP Basic auth, except the recipient unsubscribe link (/u/*) and /health. With SEND_LIVE=1 and no password the app refuses to serve at all.
+
 ## Honest limits
 - The starting history is **seeded** for the demo. The live flip (one more approval makes `assign_subtask` automatic)
   and the refusals run for real. Real promotion on a higher-risk class takes far more reviewed decisions.
@@ -49,5 +52,5 @@ redeploy resets the demo to its seeded state.
 - Sample leads are labelled as sample data. `publish_post` is a hackathon extension that exists to show floor rules.
 
 ## Built on
-FYP F26-068 Bizzii (gate design, onboarding wizard, 22-class catalogue) and the BinaryNext outreach tool (design
-reference for discovery, polite crawling and scoring; re-implemented here, not imported).
+FYP F26-068 Bizzii (gate design, onboarding wizard, 22-class catalogue). Discovery, polite crawling and scoring
+were written for this project.
