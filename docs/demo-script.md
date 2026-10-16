@@ -13,7 +13,7 @@ Use the same story for both. The video is the short cut. The live demo adds the 
 
 ## Before recording (about 15 minutes, on the deployed app)
 
-1. Deploy with `SEED_HISTORY=1`, `APP_PASSWORD`, `PUBLIC_URL` (the deployed address) and the mail settings. Keep `SEND_LIVE=0`: every email goes to `TEST_INBOX`, which is your phone.
+1. Deploy with `SEED_HISTORY=1`, `PUBLIC_URL` (the deployed address) and the mail settings. No login is needed while `SEND_LIVE=0`; set `APP_PASSWORD` only if you want one. Keep `SEND_LIVE=0`: every email goes to `TEST_INBOX`, which is your phone.
 2. Open **Setup** and onboard the business once. Include:
    - two clients, each with a contact email
    - one teammate with an email (for example a developer)

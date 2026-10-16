@@ -1270,7 +1270,7 @@ def ready():
         ("Mailbox reading", inbox.configured(), "Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD (and INBOX_POLL=1 to read every minute)."),
         ("AI drafting", llm.available(), "Set GROQ_API_KEY (more keys as GROQ_API_KEY_2, _3); without it the agents use templates."),
         ("Phone links work outside this machine", bool(pu) and "localhost" not in pu and "127.0.0.1" not in pu, "Set PUBLIC_URL to the deployed address, for example https://<service>-app.alternatefutures.ai"),
-        ("Login in front of the app", bool(os.getenv("APP_PASSWORD")) or not pu, "Set APP_PASSWORD (and APP_USER, default 'judge'); give judges this test login in the PDF."),
+        ("Login, if live sending is on", bool(os.getenv("APP_PASSWORD")) or os.getenv("SEND_LIVE") != "1", "Live sending is on: set APP_PASSWORD (and APP_USER, default 'judge') so strangers cannot send real email."),
         ("A teammate who can approve", team_ok and bool(approvers_cfg()), "Add a teammate with an email in Setup, then choose what they can approve under 'Who else can approve'."),
         ("Not sending to real recipients", os.getenv("SEND_LIVE") != "1", "SEND_LIVE=1 sends to real people: keep it off for the demo."),
     ]
