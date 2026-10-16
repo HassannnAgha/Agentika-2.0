@@ -70,13 +70,15 @@ def poll_once(handler, limit: int = 10, imap_factory=None) -> dict:
     STATE.update(last_poll=time.strftime("%Y-%m-%d %H:%M:%S"), last_result={"processed": len(done), "skipped": skipped, "messages": done})
     return STATE["last_result"]
 
-def start_background(handler, every: int = 60):
-    """Poll on a timer when a mailbox is configured. A failure is logged and retried; it never takes the server down."""
+def start_background(handler, every: int = 60, ready=None):
+    """Poll on a timer when a mailbox is configured. A failure is logged and retried; it never takes the server down.
+    `ready` (e.g. "is a business onboarded?") holds polling back, so mail that arrives before setup is left unread rather than refused."""
     if STATE["running"] or not configured() or os.getenv("INBOX_POLL", "1") == "0": return False
-    STATE["running"] = True
+    STATE["running"] = True; STATE["every"] = every
     def loop():
         while True:
-            try: poll_once(handler)
+            try:
+                if ready is None or ready(): poll_once(handler)
             except Exception as e: STATE["last_result"] = {"error": type(e).__name__}; print(f"[inbox] poll failed: {type(e).__name__}")
             time.sleep(every)
     threading.Thread(target=loop, daemon=True).start(); return True

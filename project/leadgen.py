@@ -38,7 +38,68 @@ def _from_places(keyword, geo, limit):
              "website": pl.get("websiteUri", ""), "phone": pl.get("nationalPhoneNumber") or pl.get("internationalPhoneNumber", ""), "email": "", "signals": {}}
             for pl in r.json().get("places", []) if (pl.get("displayName") or {}).get("text")]
 
+# business type words -> the OpenStreetMap tags such businesses carry (a name rarely says "physiotherapy clinic")
+OSM_TAGS = [
+    (r"physio", ['"healthcare"="physiotherapist"', '"healthcare:speciality"~"physiotherapy"']),
+    (r"dent", ['"amenity"="dentist"', '"healthcare"="dentist"']),
+    (r"clinic|medical|doctor|health", ['"amenity"="clinic"', '"amenity"="doctors"', '"healthcare"="clinic"']),
+    (r"pharm|chemist", ['"amenity"="pharmacy"']),
+    (r"baker|cake|pastr", ['"shop"="bakery"', '"shop"="pastry"']),
+    (r"cafe|coffee", ['"amenity"="cafe"']),
+    (r"restaurant|food|eatery|dining", ['"amenity"="restaurant"', '"amenity"="fast_food"']),
+    (r"gym|fitness", ['"leisure"="fitness_centre"']),
+    (r"salon|beauty|hair|barber", ['"shop"="hairdresser"', '"shop"="beauty"']),
+    (r"school|academy|tuition|education", ['"amenity"="school"', '"amenity"="college"', '"office"="educational_institution"']),
+    (r"hotel|guest ?house", ['"tourism"="hotel"', '"tourism"="guest_house"']),
+    (r"law|legal|advocate", ['"office"="lawyer"']),
+    (r"account|tax|audit", ['"office"="accountant"', '"office"="tax_advisor"']),
+    (r"real estate|property|estate agent", ['"office"="estate_agent"']),
+    (r"logistic|courier|freight|transport", ['"office"="logistics"', '"office"="courier"']),
+    (r"software|it company|tech", ['"office"="it"', '"office"="company"']),
+    (r"architect|interior", ['"office"="architect"', '"shop"="interior_decoration"']),
+    (r"vet|animal", ['"amenity"="veterinary"']),
+]
+
+def _overpass(query):
+    last = None
+    for url in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
+        try:
+            r = httpx.post(url, data={"data": query}, timeout=float(os.getenv("OVERPASS_TIMEOUT", "20")), headers={"User-Agent": "Bizzii/1.0 (lead discovery)"})
+            r.raise_for_status(); return r.json().get("elements", [])
+        except Exception as e: last = e
+    raise last
+
+def _from_overpass(keyword, geo):
+    """Businesses of this type inside the named place: by their OpenStreetMap tags and by name, with a website or email first."""
+    g = httpx.get("https://nominatim.openstreetmap.org/search", timeout=12, headers={"User-Agent": "Bizzii/1.0 (lead discovery; one query per search)"},
+                  params={"q": geo, "format": "jsonv2", "limit": 1})
+    g.raise_for_status(); hit = (g.json() or [None])[0]
+    if not hit or not hit.get("boundingbox"): return []
+    s, n, w, e = (float(x) for x in hit["boundingbox"]); bbox = f"{s},{w},{n},{e}"
+    tags = [t for rx, ts in OSM_TAGS if re.search(rx, keyword, re.I) for t in ts]
+    word = re.escape(keyword.split()[0]) if keyword.split() else ""
+    parts = [f'nwr[{t}]["name"]({bbox});' for t in tags] + ([f'nwr["name"~"{word}",i]["shop"]({bbox});', f'nwr["name"~"{word}",i]["amenity"]({bbox});',
+                                                            f'nwr["name"~"{word}",i]["office"]({bbox});', f'nwr["name"~"{word}",i]["healthcare"]({bbox});'] if word else [])
+    if not parts: return []
+    els = _overpass(f"[out:json][timeout:18];({''.join(parts)});out center tags 120;")
+    out, seen = [], set()
+    for el in els:
+        t = el.get("tags") or {}; name = t.get("name") or ""
+        if not name or name.lower() in seen: continue
+        seen.add(name.lower())
+        street = " ".join(x for x in (t.get("addr:housenumber"), t.get("addr:street")) if x)
+        out.append({"name": name, "category": keyword, "address": ", ".join(x for x in (street, t.get("addr:city") or geo) if x)[:140],
+                    "website": t.get("website") or t.get("contact:website") or t.get("url") or "", "phone": t.get("phone") or t.get("contact:phone") or "",
+                    "email": t.get("email") or t.get("contact:email") or "", "signals": {}})
+    out.sort(key=lambda l: (not l["email"], not l["website"]))      # reachable businesses first
+    return out
+
 def _from_osm(keyword, geo):
+    try:
+        found = _from_overpass(keyword, geo)
+        if found: return found
+    except Exception as e:
+        print(f"[leads] overpass failed ({type(e).__name__}); using the simple search")
     r = httpx.get("https://nominatim.openstreetmap.org/search", timeout=12,
                   headers={"User-Agent": "Bizzii/1.0 (lead discovery; one query per search)"},
                   params={"q": f"{keyword} {geo}".strip(), "format": "jsonv2", "extratags": 1, "addressdetails": 0, "limit": 40})
@@ -124,8 +185,12 @@ def auto_prospect(per_run: int = 6, min_score: int = None) -> dict:
     min_score = int(os.getenv("LEAD_MIN_SCORE", "50")) if min_score is None else min_score
     plan = plan_targets(); tg = plan.get("targets") or []
     if not tg: return {"error": "no targets: finish onboarding (or set LEAD_TARGETS / PUT /api/sales/targets)"}
-    cur = int(plan.get("cursor", 0)); t = tg[cur % len(tg)]; plan["cursor"] = cur + 1; persist.put("sales_targets", plan)
-    found = discover(t["keyword"], t["geo"], per_run)
+    tried = []
+    for _ in range(min(3, len(tg))):                             # nothing listed for one type: try the next planned target in the same run
+        cur = int(plan.get("cursor", 0)); t = tg[cur % len(tg)]; plan["cursor"] = cur + 1; persist.put("sales_targets", plan)
+        found = discover(t["keyword"], t["geo"], per_run); tried.append(t["keyword"])
+        if found.get("added"): break
+    if len(tried) > 1: found["note"] = (found.get("note") or "") + f" Searched: {', '.join(tried)}."
     for lid in found.get("ids", []):
         try: enrich(lid)
         except Exception: pass                                   # an unreadable site just leaves the lead unscored

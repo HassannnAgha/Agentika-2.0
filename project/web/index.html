@@ -15,6 +15,8 @@
 .toast{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:var(--r);padding:11px 13px;box-shadow:0 6px 24px rgba(0,0,0,.10);font-size:13px;animation:tin .25s ease-out}
 .toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}.toast.warn{border-left-color:var(--recall)}.toast b{display:block;font-size:14px;margin-bottom:2px}
 @keyframes tin{from{transform:translateY(10px);opacity:0}to{transform:none;opacity:1}}
+.pulse{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}.hb{color:var(--ok)!important}
+#live div{display:flex;gap:10px}#live .mut{flex:none;font-family:var(--mono)}
 details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-bottom:6px}
 </style></head><body><div class="wrap">
 <nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
@@ -26,6 +28,7 @@ details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-b
 <div id="banner"></div>
 <div id="toasts" aria-live="polite"></div>
 <div class="stats" id="impact"></div>
+<div class="card" style="margin-top:12px"><div class="row"><span class="dot pulse" style="background:var(--ok)"></span><b>Live activity</b><span class="mut grow" id="live-sub"></span></div><div id="live" class="log" style="margin-top:6px"></div></div>
 <div id="week" style="margin-top:14px"></div>
 
 <h2>Waiting on you <span class="mut" id="pend-n" style="text-transform:none;letter-spacing:0"></span></h2><div id="pend" class="grid"></div><div class="row" id="pend-more" style="margin-top:8px"></div>
@@ -153,6 +156,17 @@ function notice(s){const names=s.agent_names||{};
   else if(/^DEMOTED/.test(l.msg))toast('Trust lost',l.msg.replace(/^DEMOTED: /,''),'bad');
   else if(/^check-in due/.test(l.msg))toast('Check-in due',l.msg.replace(/^check-in due: /,''),'warn')}
  lastLog=key(s.log[0])}
+// ---- when each agent last worked and works next (its own clock, not a button)
+function rel(ts,now){if(!ts)return'soon';const d=Math.round(ts-(now||Date.now()/1000));if(d<=45)return'any moment';const m=Math.round(d/60);return m<60?`in ${m} min`:`in ${Math.floor(m/60)} h ${m%60} min`}
+const hhmm=t=>t?String(t).slice(11,16):'';
+function heartbeat(ag,s){const sc=s.scheduler||{},ib=s.inbox||{};
+ if(!s.onboarded)return'<span class="hb">Starts when setup is finished</span>';
+ if(!sc.running)return ag==='operations'&&ib.polling?`<span class="hb">Reads the mailbox every minute</span>`:'<span class="hb">Works when you press its buttons</span>';
+ const t={operations:(ib.polling?`Reads the mailbox every minute${ib.last_poll?' (last '+hhmm(ib.last_poll)+')':''} · `:'')+`checks for quiet clients ${rel(sc.next_scan,s.now)}`,
+  project:`Checks for stalled tasks ${rel(sc.next_scan,s.now)}`+(sc.last_scan?` (last ${hhmm(sc.last_scan)})`:''),
+  sales:`Searches for new leads ${rel(sc.next_prospect,s.now)}`+(sc.last_prospect?` (last ${hhmm(sc.last_prospect)})`:''),
+  marketing:`Drafts its next post ${rel(sc.next_marketing,s.now)}`+(sc.last_marketing?` (last ${hhmm(sc.last_marketing)})`:'')}[ag];
+ return `<span class="hb"><span class="dot pulse" style="background:var(--ok)"></span>${esc(t)}</span>`}
 async function loadReady(){try{const r=await get('/api/ready');
  $('ready').innerHTML=`<div class="notice ${r.ready?'ok':'warn'}" style="margin-top:0"><b>${r.ready?'Everything is set up.':'A few things to set before you rely on it, or record it:'}</b></div><table>${r.checks.map(c=>`<tr><td style="width:42%"><span class="dot" style="background:var(--${c.ok?'ok':'recall'})"></span>${esc(c.check)}</td><td class="mut">${c.ok?'ready':esc(c.fix)}</td></tr>`).join('')}</table>`}catch(e){}}
 async function api(u,b,m){const r=await fetch(u,{method:m||'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
@@ -303,6 +317,9 @@ function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earn
 async function load(){
  let s;try{s=await get('/state')}catch(e){return}S=s;notice(s);
  $('pend-n').textContent=s.pending.length?`· ${s.pending.length}`:'';
+ const sc=s.scheduler||{};
+ $('live').innerHTML=s.log.length?s.log.slice(0,7).map(l=>`<div><span class="mut">${esc(l.t)}</span><span>${esc(l.msg)}</span></div>`).join(''):'<div class="mut">Waiting for the first piece of work.</div>';
+ $('live-sub').textContent=!s.onboarded?'· the agents start as soon as setup is finished':sc.running?`· working on their own · next sweep ${rel(sc.next_scan,s.now)}`+(s.inbox.polling?' · reading the mailbox every minute':''):'· schedule off: the agents work when you press their buttons';
  $('biz').textContent=s.onboarded?s.business:'No business set up yet';$('title').textContent=s.onboarded?s.business:'Your back office';
  $('democtl').style.display=s.mode==='demo'?'':'none';
  $('banner').innerHTML=(!s.onboarded?`<div class="notice warn"><b>No business is recorded yet.</b> Every agent's proposal is refused until setup is complete. <a href="/onboarding">Start setup</a>.</div>`:'')
@@ -315,7 +332,7 @@ async function load(){
  const byAg={};s.classes.forEach(c=>(byAg[c.agent]??=[]).push(c));
  for(const ag of AG){const st=s.agents[ag]||{active:false,missing:['unknown']};const list=byAg[ag]||[];
   $('st-'+ag).innerHTML=st.active&&s.onboarded?'<span class="badge Auto">Active</span>':`<span class="badge Always" title="${esc((st.missing||[]).join('; '))}">${s.onboarded?'Inactive':'Waiting for setup'}</span>`;
-  $('meta-'+ag).innerHTML=`<span><b>${list.filter(c=>c.earned).length}</b> of ${list.length} kinds of action earned</span><span><b>${(s.agent_open||{})[ag]||0}</b> waiting on you</span>`+(s.agent_last&&s.agent_last[ag]?`<span>Last: ${esc(s.agent_last[ag])}</span>`:'')+(!st.active&&s.onboarded?`<span style="color:var(--bad)">${esc(st.missing.join('; '))}</span>`:'');
+  $('meta-'+ag).innerHTML=heartbeat(ag,s)+`<span><b>${list.filter(c=>c.earned).length}</b> of ${list.length} kinds of action earned</span><span><b>${(s.agent_open||{})[ag]||0}</b> waiting on you</span>`+(s.agent_last&&s.agent_last[ag]?`<span>Last: ${esc(s.agent_last[ag])}</span>`:'')+(!st.active&&s.onboarded?`<span style="color:var(--bad)">${esc(st.missing.join('; '))}</span>`:'');
   const next=list.filter(c=>c.path&&c.path.state==='learning'&&c.path.steps!=null).sort((a,b)=>a.path.steps-b.path.steps)[0];
   $('tm-'+ag).innerHTML=next?`<div class="mut">Closest to doing alone: <b>${esc(next.label)}</b> &middot; ${next.path.steps} clean run${next.path.steps==1?'':'s'} to go</div><div class="meter" title="${esc(next.path.text)}"><i style="width:${Math.round(100*next.nW/(next.nW+next.path.steps))}%"></i></div>`:'';}
  $('cls').innerHTML=AG.map(ag=>{const list=byAg[ag]||[];if(!(ag in openState))openState[ag]=false;

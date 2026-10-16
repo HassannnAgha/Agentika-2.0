@@ -408,7 +408,8 @@ def state():
                 "business": STORE.profile["business"]["name"], "profile_source": STORE.profile.get("source"),
                 "agents": agent_status(STORE.profile), "agent_names": AGENT_NAMES, "llm": llm.available(),
                 "mode": "demo" if demo() else "real", "onboarded": STORE.onboarded(), "seeded_history": META["seeded"],
-                "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"]},
+                "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "now": time.time(),
+                "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"], "last_poll": inbox.STATE.get("last_poll"), "every": inbox.STATE.get("every")},
                 "tasks": {"jira": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None},
                 "email": {"live": os.getenv("SEND_LIVE") == "1", "test_inbox": os.getenv("TEST_INBOX", ""), "mailbox": email_configured(),
                           "sender": os.getenv("SMTP_USER", "")},
@@ -622,6 +623,7 @@ def _dedup(specs, days=None):
 def process_inbound(sender: str, subject: str, body: str, attachments=(), message_id: str = ""):
     """One inbound message through the Operations agent. Shared by the API and the mailbox poller."""
     atts = [a if isinstance(a, dict) else a.model_dump() for a in attachments]
+    log(f"Operations is reading an email from {sender.strip()[:80]}: \"{(subject.strip() or '(no subject)')[:80]}\"" + (f" with {len(atts)} attachment(s)" if atts else ""), kind="sweep")
     out = _submit(agents.ops_inbound(sender.strip()[:120], subject.strip()[:160], body.strip()[:6000], atts, message_id=(message_id or "")[:300]))
     first = out[0] if out else {}
     persist.append("messages", {"id": f"m{int(time.time()*1000)%10**7:x}", "from": sender.strip()[:120], "subj": subject.strip()[:160] or "(no subject)", "attachments": len(atts),
@@ -713,6 +715,10 @@ def run_prospecting():
         a, skipped = _campaign(res["ready"], f"Auto: {res['target']['keyword']} {res['target']['geo']}".strip())
         res["campaign"] = a and {"id": a["id"], "route": a["decision"]["route"], "recipients": len(a["payload"].get("recipients", []))}
     SCHED.update(last_prospect=time.strftime("%Y-%m-%d %H:%M:%S"), last_prospect_result={k: v for k, v in res.items() if k != "found"} | {"found": (res.get("found") or {}).get("added")})
+    t = res.get("target") or {}
+    tried = re.search(r"Searched: ([^.]+)\.", (res.get("found") or {}).get("note") or "")
+    log(f"Sales searched for {tried.group(1) if tried else t.get('keyword', 'prospects')}{' in ' + t['geo'] if t.get('geo') else ''}: {(res.get('found') or {}).get('added', 0)} new lead(s), "
+        f"{len(res.get('ready') or [])} ready" + (f", campaign #{res['campaign']['id']} waiting for you" if res.get("campaign") else "") + ".", kind="sweep")
     return res
 
 @app.post("/api/agents/sales/prospect")
@@ -726,6 +732,8 @@ def run_scans():
     res = {"quiet_clients": _submit(_dedup(agents.ops_scan(int(os.getenv("QUIET_DAYS", "14"))))),
            "stalled_tasks": _submit(_dedup(agents.pm_stalled(float(os.getenv("STALL_DAYS", "7")))))}
     SCHED.update(last_scan=time.strftime("%Y-%m-%d %H:%M:%S"), last_scan_result={k: len(v) for k, v in res.items()})
+    log(f"Operations checked {len(STORE.clients())} clients for silence: {len(res['quiet_clients'])} new proposal{'s' if len(res['quiet_clients']) != 1 else ''}. "
+        f"Project Management checked {len([t for t in (persist.get('tasks', []) or []) if t.get('status') != 'complete'])} open tasks: {len(res['stalled_tasks'])} stalled.", kind="sweep")
     return res
 
 @app.post("/api/agents/run")
@@ -738,19 +746,39 @@ def agents_status():
     return {"agents": agent_status(STORE.profile), "scheduler": SCHED, "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"],
             "last_poll": inbox.STATE["last_poll"], "last_result": inbox.STATE["last_result"]}, "targets": persist.get("sales_targets"), "onboarded": STORE.onboarded()}
 
+def run_marketing():
+    """Scheduled Marketing run: one post drafted from the next permitted claim, in the recorded voice. Never a second while one waits."""
+    if not STORE.onboarded(): return {"skipped": "not onboarded"}
+    if not agent_status(STORE.profile)["marketing"]["active"]: return {"skipped": "Marketing agent inactive"}
+    if any(a["cls"] == "draft_content" and a["status"] in ("awaiting", "recall") for a in PENDING.values()): return {"skipped": "a draft is already waiting for you"}
+    claims = [c.get("text") for c in STORE.profile.get("brand", {}).get("permitted_claims", []) if c.get("text")] or [STORE.profile["business"].get("description") or STORE.profile["business"]["name"]]
+    i = int(persist.get("marketing_topic_idx", 0) or 0); persist.put("marketing_topic_idx", i + 1)
+    out = _submit(agents.marketing_draft(f"A short post on: {claims[i % len(claims)][:120]}"))
+    SCHED.update(last_marketing=time.strftime("%Y-%m-%d %H:%M:%S"), last_marketing_result={"drafted": len(out)})
+    log(f"Marketing drafted a post on \"{claims[i % len(claims)][:60]}\" for you to review.", kind="sweep")
+    return {"drafted": out}
+
+def _every(name, default, floor): return max(floor, int(os.getenv(name, str(default)))) * 60
+
 def start_scheduler():
-    """The agents' own clock: sweeps every SCAN_EVERY_MIN (default 360), prospecting every PROSPECT_EVERY_MIN (default 720). AGENT_SCHEDULE=0 turns it off."""
+    """The agents' own clock: sweeps every SCAN_EVERY_MIN (default 360), prospecting every PROSPECT_EVERY_MIN (default 720), a Marketing draft
+    every MARKETING_EVERY_MIN (default 1440). Nothing runs before onboarding; the first runs start within half a minute of it. AGENT_SCHEDULE=0 turns it off."""
     if SCHED["running"] or demo() or os.getenv("AGENT_SCHEDULE", "1") == "0": return False
     SCHED["running"] = True
+    now = time.time()
+    SCHED.update(next_scan=now + 60, next_prospect=now + 120, next_marketing=now + 150)   # relative to onboarding if it has not happened yet
     def loop():
-        scan_every = max(5, int(os.getenv("SCAN_EVERY_MIN", "360"))) * 60
-        prospect_every = max(30, int(os.getenv("PROSPECT_EVERY_MIN", "720"))) * 60
-        next_scan, next_prospect = time.time() + 90, time.time() + 180              # first run shortly after boot
         while True:
-            time.sleep(30)
+            time.sleep(15)
             try:
-                if time.time() >= next_scan: run_scans(); next_scan = time.time() + scan_every
-                if os.getenv("PROSPECT_AUTO", "1") != "0" and time.time() >= next_prospect: run_prospecting(); next_prospect = time.time() + prospect_every
+                if not STORE.onboarded():                     # wait for a business instead of skipping a whole interval
+                    t = time.time(); SCHED.update(next_scan=t + 5, next_prospect=t + 20, next_marketing=t + 35); continue
+                if time.time() >= SCHED["next_scan"]:
+                    run_scans(); SCHED["next_scan"] = time.time() + _every("SCAN_EVERY_MIN", 360, 5)
+                if os.getenv("PROSPECT_AUTO", "1") != "0" and time.time() >= SCHED["next_prospect"]:
+                    run_prospecting(); SCHED["next_prospect"] = time.time() + _every("PROSPECT_EVERY_MIN", 720, 30)
+                if os.getenv("MARKETING_AUTO", "1") != "0" and time.time() >= SCHED["next_marketing"]:
+                    run_marketing(); SCHED["next_marketing"] = time.time() + _every("MARKETING_EVERY_MIN", 1440, 30)
                 if time.localtime().tm_hour == int(os.getenv("DIGEST_HOUR", "18")) and SCHED.get("last_digest", "")[:10] != time.strftime("%Y-%m-%d"): send_digest()
             except Exception as e:
                 print(f"[scheduler] {type(e).__name__}: {e}")
@@ -1555,7 +1583,7 @@ def boot():
             with lock: _seed(); META["seeded"] = True; save()
             log("SEED_HISTORY=1: a labelled starting history was loaded once into the empty evidence store")
         log(f"real mode: loaded evidence for {len(gate.pairs)} agent/action pairs and {n_open} actions waiting on the owner")
-    inbox.start_background(process_inbound)
+    inbox.start_background(process_inbound, ready=STORE.onboarded)
     start_scheduler()
 
 # ------------------------------------------------------------------ Bizzii as an MCP server: the trust layer for any AI agent (see trust_mcp.py)

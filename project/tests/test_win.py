@@ -145,6 +145,27 @@ def test_the_trust_report_and_csv_hold_every_decision(real):
     csv = c.get("/api/report.csv")
     assert csv.headers["content-type"].startswith("text/csv") and "decided_by" in csv.text and "owner_quality" in csv.text and ",owner," in csv.text
 
+# ---------------------------------------------------------------- the agents' own clock
+def test_scheduled_runs_wait_for_onboarding_then_show_up_in_the_activity_feed(real):
+    assert server.run_marketing() == {"skipped": "not onboarded"} and server.run_scans() == {"skipped": "not onboarded"}
+    onboard2()
+    m = server.run_marketing(); assert len(m["drafted"]) == 1 and m["drafted"][0]["cls"] == "draft_content"
+    assert server.run_marketing() == {"skipped": "a draft is already waiting for you"}          # never stacks drafts
+    server.run_scans()
+    msgs = [l["msg"] for l in c.get("/state").json()["log"]]
+    assert any(x.startswith("Marketing drafted a post") for x in msgs) and any(x.startswith("Operations checked 2 clients") for x in msgs)
+
+def test_the_mailbox_is_left_unread_until_a_business_is_set_up(monkeypatch):
+    import inbox, time as _t
+    calls = []
+    monkeypatch.setattr(inbox, "configured", lambda: True); monkeypatch.setenv("INBOX_POLL", "1")
+    monkeypatch.setattr(inbox, "poll_once", lambda h: calls.append(1)); monkeypatch.setitem(inbox.STATE, "running", False)
+    ready = {"v": False}
+    assert inbox.start_background(lambda **k: None, every=0.05, ready=lambda: ready["v"])
+    _t.sleep(0.3); assert calls == []                                                          # nothing read, so nothing refused and lost
+    ready["v"] = True; _t.sleep(0.3); assert calls
+    ready["v"] = False                                                                          # park the thread again
+
 # ---------------------------------------------------------------- setup check
 def test_the_setup_check_names_what_is_missing_without_showing_secrets(real):
     real.setenv("PUBLIC_URL", "http://localhost:8000")
