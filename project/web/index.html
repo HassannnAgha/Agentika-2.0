@@ -10,6 +10,12 @@
 .cols4{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));gap:14px}.cols4 h3{font-size:16px}
 #recent,#consent,#apv,#blocked,#taught,#rt-out{overflow-x:auto}.card td{overflow-wrap:anywhere}
 .path{font-size:12px;color:var(--dim);background:var(--tint-blue);border-radius:var(--r-ctl);padding:7px 9px;margin:6px 0}.path b{color:var(--tx)}
+.sec{font:600 22px var(--display);margin:40px 0 4px;letter-spacing:-.01em;text-transform:none;color:var(--tx)}.card td button,.card td .badge{white-space:nowrap;overflow-wrap:normal}.sec+.lede{margin-bottom:6px}
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(380px,calc(100vw - 32px))}
+.toast{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:var(--r);padding:11px 13px;box-shadow:0 6px 24px rgba(0,0,0,.10);font-size:13px;animation:tin .25s ease-out}
+.toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}.toast.warn{border-left-color:var(--recall)}.toast b{display:block;font-size:14px;margin-bottom:2px}
+@keyframes tin{from{transform:translateY(10px);opacity:0}to{transform:none;opacity:1}}
+details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-bottom:6px}
 </style></head><body><div class="wrap">
 <nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
 <a href="/onboarding">Setup</a><a class="on" href="/gate">Dashboard</a><a href="/leads">Leads</a><a href="/report">Trust report</a>
@@ -18,23 +24,11 @@
 <h1 id="title">Your back office</h1>
 <p class="lede">Four agents propose. The Risk-Trust Gate decides how much of you each action needs, from its risk and the agent's own record, and says why. Autonomy is earned from evidence and granted only with your consent, and you can always take it back.</p>
 <div id="banner"></div>
+<div id="toasts" aria-live="polite"></div>
+<div class="stats" id="impact"></div>
 <div id="week" style="margin-top:14px"></div>
 
-<div class="stats" id="impact"></div>
-<div class="stats">
- <div class="stat"><div class="k">System</div><div class="v" id="s-mode">…</div></div>
- <div class="stat"><div class="k">Email</div><div class="v" id="s-email">…</div><div style="margin-top:8px" class="row"><button class="sm" onclick="testMail(this)">Send a test email</button><button class="sm" onclick="digest(this)">Send me my digest</button></div><div class="mut" id="mail-out"></div></div>
- <div class="stat"><div class="k">Mailbox reading</div><div class="v" id="s-inbox">…</div></div>
- <div class="stat"><div class="k">AI drafting</div><div class="v" id="s-ai">…</div></div>
- <div class="stat"><div class="k">Task tool</div><div class="v" id="s-tasks">…</div></div>
-</div>
-
-<div id="democtl" style="display:none"><h2>Demo controls</h2><div class="row">
-<button class="sm" onclick="post('/reset?seed=true')">Reset (seeded)</button><button class="sm" onclick="post('/reset?seed=false')">Reset (empty)</button>
-<button class="sm q" onclick="if(confirm('Reset everything?'))post('/reset?seed=true&full=true')">Reset everything</button>
-<button class="sm" onclick="sc('task')">PM: assign</button><button class="sm" onclick="sc('poisoned')">Poisoned email</button><button class="sm" onclick="sc('publish')">Publish</button></div></div>
-
-<h2>Waiting on you</h2><div id="pend" class="grid"></div>
+<h2>Waiting on you <span class="mut" id="pend-n" style="text-transform:none;letter-spacing:0"></span></h2><div id="pend" class="grid"></div><div class="row" id="pend-more" style="margin-top:8px"></div>
 
 <h2>Your four agents</h2>
 <div class="agents">
@@ -87,26 +81,29 @@
   <button class="p" onclick="attack(this,'custom')">Run it through the gate</button></div></details>
  <div id="rt-out" style="margin-top:10px"></div></div>
 
-<h2>Train your agents</h2>
-<div class="card"><div class="row"><span class="mut grow">Practice drafts built from your real records. Grade them like real work. Your decisions build each agent's record of appropriateness and your willingness to delegate. Nothing is sent, so competence still has to be proven on real work.</span>
- <select id="t-agent" style="width:auto"><option value="">All agents</option><option value="operations">Operations</option><option value="project">Project Management</option><option value="sales">Sales</option><option value="marketing">Marketing</option></select>
- <button class="p" onclick="trainStart(this)">Start a training round</button></div>
- <div class="mut" id="t-stats" style="margin-top:8px"></div><div class="train" id="train" style="margin-top:10px"></div></div>
-
+<h2 class="sec">You stay in charge</h2><p class="lede">What the agents may do alone is yours to give, check and take back.</p>
 <div class="two" style="margin-top:6px">
  <div><h2>Autonomy you have granted</h2><div class="card" id="consent"></div></div>
  <div><h2>Your supervision rules <span class="mut" style="text-transform:none;letter-spacing:0">&middot; these can only add supervision</span></h2><div class="card" id="sup"></div></div>
 </div>
 <div class="two">
  <div><h2>Who else can approve</h2><div class="card" id="apv"></div></div>
+ <div><h2>Recent decisions</h2><div id="recent" class="card"></div></div>
+</div>
+<details class="card hood" style="margin-top:14px"><summary>Train your agents <span class="mut" style="font-weight:400">&middot; grade practice drafts to build their record faster</span></summary>
+<div><div class="row"><span class="mut grow">Practice drafts built from your real records. Grade them like real work. Your decisions build each agent's record of appropriateness and your willingness to delegate. Nothing is sent, so competence still has to be proven on real work.</span>
+ <select id="t-agent" style="width:auto"><option value="">All agents</option><option value="operations">Operations</option><option value="project">Project Management</option><option value="sales">Sales</option><option value="marketing">Marketing</option></select>
+ <button class="p" onclick="trainStart(this)">Start a training round</button></div>
+ <div class="mut" id="t-stats" style="margin-top:8px"></div><div class="train" id="train" style="margin-top:10px"></div></div>
+</details>
+
+<h2 class="sec">Proof</h2>
  <div><h2>Trust report</h2><div class="card"><div>Everything you decided and why, what each agent has earned, your rules, what you taught it, and what the guardrail stopped, on one printable page.</div>
   <div class="row" style="margin-top:10px"><a class="btn p" href="/report" target="_blank" rel="noopener">Open the report (save as PDF)</a><a class="btn" href="/api/report.csv">Download the audit trail (CSV)</a></div></div></div>
-</div>
 <div class="two">
  <div><h2>Stopped by the guardrail</h2><div class="card log" id="blocked"></div></div>
  <div><h2>What you have taught the agents</h2><div class="card log" id="taught"></div></div>
 </div>
-
 <h2>Why approval rates are not enough</h2>
 <div class="card"><div class="mut">Three agents, each approved on exactly 82.5% of proposals. A gate that counts approvals treats them the same. This gate separates competence from your willingness to delegate, so it gives three different verdicts.</div><div class="cols3" id="closer" style="margin-top:10px"></div></div>
 
@@ -114,11 +111,24 @@
 <div class="card"><div>Bizzii is also an <b>MCP server</b>. Claude Desktop, Claude Code, Cursor or n8n can propose actions through this gate. Each outside agent gets its own trust record and starts at zero, and no MCP tool can approve anything: only you can.</div>
 <pre class="mail" id="mcp"></pre></div>
 
+<details class="card hood" style="margin-top:28px" id="hood"><summary>Under the hood <span class="mut" style="font-weight:400">&middot; connections, setup check, every rule and the full audit trail</span></summary>
+<h2 style="margin-top:14px">Is everything ready?</h2><div class="card" id="ready"></div>
+<div class="stats">
+ <div class="stat"><div class="k">System</div><div class="v" id="s-mode">…</div></div>
+ <div class="stat"><div class="k">Email</div><div class="v" id="s-email">…</div><div style="margin-top:8px" class="row"><button class="sm" onclick="testMail(this)">Send a test email</button><button class="sm" onclick="digest(this)">Send me my digest</button></div><div class="mut" id="mail-out"></div></div>
+ <div class="stat"><div class="k">Mailbox reading</div><div class="v" id="s-inbox">…</div></div>
+ <div class="stat"><div class="k">AI drafting</div><div class="v" id="s-ai">…</div></div>
+ <div class="stat"><div class="k">Task tool</div><div class="v" id="s-tasks">…</div></div>
+</div>
+<div id="democtl" style="display:none"><h2>Demo controls</h2><div class="row">
+<button class="sm" onclick="post('/reset?seed=true')">Reset (seeded)</button><button class="sm" onclick="post('/reset?seed=false')">Reset (empty)</button>
+<button class="sm q" onclick="if(confirm('Reset everything?'))post('/reset?seed=true&full=true')">Reset everything</button>
+<button class="sm" onclick="sc('task')">PM: assign</button><button class="sm" onclick="sc('poisoned')">Poisoned email</button><button class="sm" onclick="sc('publish')">Publish</button></div></div>
 <h2>What each agent may do on its own</h2><div id="cls"></div>
-<h2>Recent decisions</h2><div id="recent" class="card"></div>
 <h2>Audit trail <span class="mut" style="text-transform:none;letter-spacing:0">&middot; stored in <span id="store">…</span></span></h2>
 <div class="card scroll" style="max-height:340px;overflow-y:auto"><table id="audit"></table></div>
 <div class="grid" style="margin-top:6px"><div><h2>Decision log</h2><div id="log" class="card log"></div></div><div><h2 id="outh">Outbox</h2><div id="out" class="card log"></div></div></div>
+</details>
 
 <script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -126,7 +136,25 @@ const v=id=>document.getElementById(id).value, $=id=>document.getElementById(id)
 const AG=['operations','project','sales','marketing'];
 const UNDO=['assign_subtask','reassign_stalled_task','update_task_record','update_client_record','flag_relationship_risk','draft_content','retain_approved_content','decompose_project','identify_project'];
 const RB={auto:['Auto','ran on its own'],recall:['Recall','runs after a window you can stop'],approval:['Asks','waiting for you'],escalate:['Always','held for you by a fixed rule'],refuse:['Always','refused by the guardrail']};
-let S=null,pendSig='',supDone=false; const openState={},DRAFTS={};
+let S=null,pendSig='',supDone=false,seenPend=null,seenAuto=null,lastLog=null,allPend=false; const openState={},DRAFTS={};
+// ---- moments worth noticing: a new decision for you, something done on its own, trust earned or lost
+function toast(title,body,cls){const box=$('toasts');const t=document.createElement('div');t.className='toast '+(cls||'');t.innerHTML=`<b>${esc(title)}</b>${esc(body||'')}`;
+ box.appendChild(t);while(box.children.length>4)box.firstChild.remove();setTimeout(()=>t.remove(),8000)}
+function notice(s){const names=s.agent_names||{};
+ const ids=new Set(s.pending.map(a=>a.id));
+ if(seenPend)s.pending.filter(a=>!seenPend.has(a.id)).slice(0,3).forEach(a=>toast(`${names[agentOf(a)]||a.agent} needs you`,`${a.label} for ${a.who}`+(a.status==='recall'?': runs soon unless you stop it':''),a.decision.route==='escalate'?'bad':''));
+ seenPend=ids;
+ const alone=s.recent.filter(a=>a.status==='executed'&&['auto','recall'].includes(a.decision.route));
+ if(seenAuto)alone.filter(a=>!seenAuto.has(a.id)).slice(0,3).forEach(a=>toast('Done on its own',`${names[agentOf(a)]||a.agent}: ${a.label} for ${a.who}`,'ok'));
+ seenAuto=new Set(alone.map(a=>a.id));
+ const key=l=>l?l.t+l.msg:'';
+ if(lastLog!==null)for(const l of s.log){if(key(l)===lastLog)break;
+  if(/^PROMOTED/.test(l.msg))toast('Trust earned',l.msg.replace(/^PROMOTED: /,''),'ok');
+  else if(/^DEMOTED/.test(l.msg))toast('Trust lost',l.msg.replace(/^DEMOTED: /,''),'bad');
+  else if(/^check-in due/.test(l.msg))toast('Check-in due',l.msg.replace(/^check-in due: /,''),'warn')}
+ lastLog=key(s.log[0])}
+async function loadReady(){try{const r=await get('/api/ready');
+ $('ready').innerHTML=`<div class="notice ${r.ready?'ok':'warn'}" style="margin-top:0"><b>${r.ready?'Everything is set up.':'A few things to set before you rely on it, or record it:'}</b></div><table>${r.checks.map(c=>`<tr><td style="width:42%"><span class="dot" style="background:var(--${c.ok?'ok':'recall'})"></span>${esc(c.check)}</td><td class="mut">${c.ok?'ready':esc(c.fix)}</td></tr>`).join('')}</table>`}catch(e){}}
 async function api(u,b,m){const r=await fetch(u,{method:m||'POST',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||'Request failed');return j}
 const get=async u=>(await fetch(u)).json();
@@ -176,10 +204,11 @@ function pathBox(p){return p?`<div class="path"><b>Path to autonomy:</b> ${esc(p
 function pendCard(a){const rc=a.status==='recall',d=a.decision,p=a.payload,f=['body','text'].find(k=>typeof p[k]==='string'&&!p.recipients);
  return `<div class="card q ${rc?'recall':d.route==='escalate'?'esc':''}" id="pc-${a.id}"><div class="row"><b>${esc(a.label)}</b><span class="grow"></span>
  <span class="badge ${rc?'Recall':d.route==='escalate'?'Always':'Asks'}" id="cd-${a.id}">${rc?'recall':d.route}</span></div>
- <div class="mut">#${a.id} &middot; ${esc((S.agent_names||{})[agentOf(a)]||a.agent)} agent &middot; for ${esc(a.who)}</div>${pipe(d)}
- <div class="mut" style="margin:4px 0"><b>Why you are asked:</b> ${esc(d.why)}</div>${mail(p)}
- ${a.facts.length?`<div class="mut">Facts it relied on:</div><ul class="facts">${a.facts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
+ <div class="mut">#${a.id} &middot; ${esc((S.agent_names||{})[agentOf(a)]||a.agent)} agent &middot; for ${esc(a.who)}</div>
+ <div style="margin:6px 0"><b>Why you are asked:</b> ${esc(d.why)}</div>${mail(p)}
  ${pathBox(a.path)}${a.approvers&&a.approvers.length?`<div class="mut">Also sent to <b>${esc(a.approvers.join(', '))}</b>, who can decide it for you.</div>`:''}
+ <details><summary class="mut">How the gate decided${a.facts.length?` &middot; ${a.facts.length} fact${a.facts.length==1?'':'s'} it relied on`:''}</summary>${pipe(d)}
+ ${a.facts.length?`<ul class="facts">${a.facts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}</details>
  ${f&&!rc?`<details class="ed"><summary class="mut">Edit before approving</summary><textarea class="edit" data-field="${f}" rows="6">${esc(p[f])}</textarea></details>`:''}
  <input class="reason" placeholder="Why? (optional, teaches the agent)" style="margin:6px 0">
  <div class="row">${d.checkin?`<button class="p" onclick="decide(${a.id},'approve',true)">Yes: approve, and keep letting it do these alone</button><button onclick="decide(${a.id},'approve',false,true)">Approve, but ask me every time</button>`
@@ -272,7 +301,8 @@ async function loadOnce(){try{const r=await get('/api/compare');$('closer').inne
 function bar(v,t){return `<div class="mut">${v.toFixed(2)} / ${t.toFixed(2)}</div><div class="bar"><div class="fill" style="width:${v*100}%;background:${v>=t?'var(--ok)':'var(--blue)'}"></div><div class="tau" style="left:${t*100}%"></div></div>`}
 function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earned)return['Asks',c.path?c.path.text:'Asks first: '+c.why];return c.sig[3]==='full'?['Auto','Runs without asking (with your consent)']:['Recall','Runs after a recall window you can stop']}
 async function load(){
- let s;try{s=await get('/state')}catch(e){return}S=s;
+ let s;try{s=await get('/state')}catch(e){return}S=s;notice(s);
+ $('pend-n').textContent=s.pending.length?`· ${s.pending.length}`:'';
  $('biz').textContent=s.onboarded?s.business:'No business set up yet';$('title').textContent=s.onboarded?s.business:'Your back office';
  $('democtl').style.display=s.mode==='demo'?'':'none';
  $('banner').innerHTML=(!s.onboarded?`<div class="notice warn"><b>No business is recorded yet.</b> Every agent's proposal is refused until setup is complete. <a href="/onboarding">Start setup</a>.</div>`:'')
@@ -293,8 +323,10 @@ async function load(){
   <div class="scroll" style="margin-top:8px"><table><tr><th>Action</th><th>Today</th><th>Risk</th><th style="min-width:120px">Competence</th><th style="min-width:120px">Appropriate</th><th style="min-width:120px">Delegation</th><th>Evidence</th></tr>
   ${list.map(c=>{const [b,t]=route(c);return `<tr><td><b>${esc(c.label)}</b>${c.extension?' <span class="pill">demo extension</span>':''}</td><td><span class="badge ${b}">${b}</span><div class="mut" style="max-width:230px">${esc(t)}</div>${c.suggest_delegate?`<div class="notice ok" style="margin:6px 0 0">${esc(c.suggest_delegate)}</div>`:''}</td><td>${c.risk.toFixed(2)}</td>
   <td>${bar(c.W,c.tau)}</td><td>${bar(c.A,c.tau)}</td><td>${bar(c.D,c.tau)}</td><td class="mut">${c.nW}/${c.n_min} verified<br>ok ${c.counts.a} &middot; mine ${c.counts.rp} &middot; wrong ${c.counts.rq}</td></tr>`}).join('')}</table></div></details>`}).join('');
- const sig=s.pending.map(a=>a.id+a.status+(a.path?a.path.steps:'')).join(',');
- if(sig!==pendSig){pendSig=sig;$('pend').innerHTML=s.pending.length?s.pending.map(pendCard).join(''):'<div class="card mut">Nothing is waiting on you.</div>'}
+ const sig=allPend+'|'+s.pending.map(a=>a.id+a.status+(a.path?a.path.steps:'')).join(',');
+ if(sig!==pendSig){pendSig=sig;const list=[...s.pending].sort((a,b)=>b.id-a.id),shown=allPend?list:list.slice(0,6);   // newest first: what just arrived is on top
+  $('pend').innerHTML=list.length?shown.map(pendCard).join(''):'<div class="card mut">Nothing is waiting on you.</div>';
+  $('pend-more').innerHTML=list.length>6?`<button class="sm" onclick="allPend=!allPend;pendSig='';load()">${allPend?'Show the newest 6':'Show all '+list.length+' waiting'}</button>`:''}
  s.pending.filter(a=>a.status==='recall').forEach(a=>{const el=$('cd-'+a.id);if(el)el.textContent='recall '+Math.ceil(a.secs_left)+'s'});
  const lab={executed:'done',declined:'declined',refused:'refused by guardrail',awaiting:'waiting',recall:'recall window',expired:'expired',undone:'undone by you'};
  $('recent').innerHTML=s.recent.length?`<table>${s.recent.map(a=>`<tr><td class="mut">#${a.id}</td><td><b>${esc(a.label)}</b> <span class="mut">for ${esc(a.who)}</span>${a.edited?' <span class="pill">you edited it</span>':''}${a.decided_by&&a.decided_by!=='owner'?` <span class="pill">decided by ${esc(a.decided_by)}</span>`:''}</td>
@@ -309,5 +341,5 @@ async function load(){
  try{const o=await get('/api/outbox');$('out').innerHTML=o.filter(m=>m.subject||m.intended_to).map(m=>`<div><span class="mut">${esc(m.t||'')}</span> <b>${esc(m.subject||'')}</b><br><span class="mut">for ${esc(m.intended_to)}${m.delivered_to?' &rarr; delivered to '+esc(m.delivered_to):m.error?' &middot; failed: '+esc(m.error):m.skipped?' &middot; '+esc(m.skipped):' &middot; not delivered (no mailbox)'}</span></div>`).join('')||'<div class="mut">No email yet.</div>'}catch(e){}
  if(!supDone){supDone=true;renderSup()}
 }
-load().then(()=>{loadSide();loadTrain();loadOnce();loadWeek();loadAttacks();renderApprovers()});loadTargets();loadClients();setInterval(load,2000);setInterval(loadSide,8000);setInterval(loadWeek,60000);
+load().then(()=>{loadSide();loadTrain();loadOnce();loadWeek();loadAttacks();renderApprovers();loadReady()});loadTargets();loadClients();setInterval(load,2000);setInterval(loadSide,8000);setInterval(()=>{loadWeek();loadReady()},60000);
 </script></div></body></html>

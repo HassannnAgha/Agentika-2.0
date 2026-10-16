@@ -58,6 +58,7 @@ const toGate = [
   ['/api/plan/:path*', '/api/plan/:path*'],
   ['/api/report.csv', '/api/report.csv'],
   ['/report', '/report'],                // printable trust report
+  ['/api/ready', '/api/ready'],          // is this deployment ready to use and record
 ];
 
 /** @type {import('next').NextConfig} */

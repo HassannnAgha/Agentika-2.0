@@ -1,0 +1,17 @@
+**/.env
+**/.env.local
+**/data
+**/data_backup_*
+**/.venv
+.git
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.next
+**/.pytest_cache
+**/*.log
+project/tests
+docs
+demo
+scripts
+mcp-config

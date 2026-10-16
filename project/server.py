@@ -1257,6 +1257,26 @@ def learning_view(): return learning.summary()
 @app.get("/api/alerts")
 def alerts_view(): return persist.tail("alerts", 30)
 
+@app.get("/api/ready")
+def ready():
+    """Is this deployment ready to be used (and recorded)? Each line says what is missing and how to fix it. No secrets are shown."""
+    pu = os.getenv("PUBLIC_URL", "")
+    team_ok = any(m.get("email") and (m["email"].strip().lower() != _owner_email()) for m in STORE.team())
+    checks = [
+        ("Business onboarded", STORE.onboarded(), "Open Setup and finish onboarding (Review, then Start Bizzii)."),
+        ("Storage survives a redeploy", persist.backend() == "postgres", "Set DATABASE_URL (Neon) on the Variables tab; without it everything is lost on redeploy."),
+        ("Mailbox to send from", email_configured(), "Set SMTP_HOST, SMTP_PORT, SMTP_USER and SMTP_PASSWORD."),
+        ("Test inbox for every email", os.getenv("SEND_LIVE") == "1" or bool(os.getenv("TEST_INBOX")), "Set TEST_INBOX: in test mode every approved email and alert goes there."),
+        ("Mailbox reading", inbox.configured(), "Set IMAP_HOST, IMAP_USER and IMAP_PASSWORD (and INBOX_POLL=1 to read every minute)."),
+        ("AI drafting", llm.available(), "Set GROQ_API_KEY (more keys as GROQ_API_KEY_2, _3); without it the agents use templates."),
+        ("Phone links work outside this machine", bool(pu) and "localhost" not in pu and "127.0.0.1" not in pu, "Set PUBLIC_URL to the deployed address, for example https://<service>-app.alternatefutures.ai"),
+        ("Login in front of the app", bool(os.getenv("APP_PASSWORD")) or not pu, "Set APP_PASSWORD (and APP_USER, default 'judge'); give judges this test login in the PDF."),
+        ("A teammate who can approve", team_ok and bool(approvers_cfg()), "Add a teammate with an email in Setup, then choose what they can approve under 'Who else can approve'."),
+        ("Not sending to real recipients", os.getenv("SEND_LIVE") != "1", "SEND_LIVE=1 sends to real people: keep it off for the demo."),
+    ]
+    rows = [{"check": n, "ok": bool(ok), "fix": None if ok else fix} for n, ok, fix in checks]
+    return {"ready": all(r["ok"] for r in rows), "checks": rows, "seeded_history": META["seeded"]}
+
 # ------------------------------------------------------------------ how close each agent is to doing a kind of action on its own, in plain words
 def _runs(k): return "already there" if k == 0 else "out of reach for now" if k is None else f"{k} to go"
 

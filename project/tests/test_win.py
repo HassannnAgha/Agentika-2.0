@@ -145,6 +145,18 @@ def test_the_trust_report_and_csv_hold_every_decision(real):
     csv = c.get("/api/report.csv")
     assert csv.headers["content-type"].startswith("text/csv") and "decided_by" in csv.text and "owner_quality" in csv.text and ",owner," in csv.text
 
+# ---------------------------------------------------------------- setup check
+def test_the_setup_check_names_what_is_missing_without_showing_secrets(real):
+    real.setenv("PUBLIC_URL", "http://localhost:8000")
+    r = c.get("/api/ready").json()
+    assert r["ready"] is False and next(x for x in r["checks"] if x["check"] == "Business onboarded")["fix"]
+    onboard2(); mailbox(real); real.setenv("TEST_INBOX", "inbox@test.example")
+    r = c.get("/api/ready").json(); by = {x["check"]: x for x in r["checks"]}
+    assert by["Business onboarded"]["ok"] and by["Mailbox to send from"]["ok"] and by["Test inbox for every email"]["ok"]
+    assert not by["Phone links work outside this machine"]["ok"] and "PUBLIC_URL" in by["Phone links work outside this machine"]["fix"]
+    c.put("/api/approvers", json={"tm-2": {"level": "low"}}); assert c.get("/api/ready").json()["checks"][8]["ok"]
+    assert "x" not in [v for x in r["checks"] for v in (x["fix"] or "").split()]          # SMTP_PASSWORD value "x" never echoed
+
 # ---------------------------------------------------------------- 6. first week
 def test_the_first_week_plan_comes_from_the_profile(real):
     assert c.get("/api/plan/week").status_code == 409

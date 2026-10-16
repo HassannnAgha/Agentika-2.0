@@ -22,8 +22,9 @@ Use the same story for both. The video is the short cut. The live demo adds the 
 3. Open **Who else can approve**, set the teammate to "Records, tasks and drafts", and save.
 4. Have the Gmail app open on your phone, logged into the `TEST_INBOX` account, to receive approval alerts.
 5. Check the **Project Management** card: "Assign a subtask" should be one approval away from earned. The seeded history is sized to do exactly that. If it already runs on its own, take it back in **Autonomy you have granted**.
-6. Close every terminal and editor. Browser zoom 110%, bookmarks bar hidden, one tab.
-7. Recording: Windows `Win + Alt + R` (Game Bar) or OBS for the screen, the phone's own screen recorder for the phone. Join the two in Clipchamp.
+6. On the dashboard, open **Under the hood → Is everything ready?** Every line should be green. Each line that isn't says which variable to set.
+7. Close every terminal and editor. Browser zoom 110%, bookmarks bar hidden, one tab. Close the "Your first week" card after showing it: it stays closed.
+8. Recording: Windows `Win + Alt + R` (Game Bar) or OBS for the screen, the phone's own screen recorder for the phone. Join the two in Clipchamp.
 
 ---
 
