@@ -348,6 +348,7 @@ def state():
                 "agents": agent_status(STORE.profile), "agent_names": AGENT_NAMES, "llm": llm.available(),
                 "mode": "demo" if demo() else "real", "onboarded": STORE.onboarded(), "seeded_history": META["seeded"],
                 "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"]},
+                "tasks": {"jira": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None},
                 "email": {"live": os.getenv("SEND_LIVE") == "1", "test_inbox": os.getenv("TEST_INBOX", ""), "mailbox": email_configured(),
                           "sender": os.getenv("SMTP_USER", "")},
                 "agent_open": {ag: sum(1 for a in PENDING.values() if a["status"] in ("awaiting", "recall") and AGENT_OF.get(a["cls"]) == ag) for ag in AGENT_NAMES},

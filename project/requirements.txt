@@ -3,3 +3,4 @@ uvicorn
 httpx
 psycopg[binary]
 pypdf
+mcp==2.2.0

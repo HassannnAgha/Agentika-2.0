@@ -22,6 +22,7 @@
  <div class="stat"><div class="k">Email</div><div class="v" id="s-email">…</div><div style="margin-top:8px" class="row"><button class="sm" onclick="testMail(this)">Send a test email</button><button class="sm" onclick="digest(this)">Send me my digest</button></div><div class="mut" id="mail-out"></div></div>
  <div class="stat"><div class="k">Mailbox reading</div><div class="v" id="s-inbox">…</div></div>
  <div class="stat"><div class="k">AI drafting</div><div class="v" id="s-ai">…</div></div>
+ <div class="stat"><div class="k">Task tool</div><div class="v" id="s-tasks">…</div></div>
 </div>
 
 <div id="democtl" style="display:none"><h2>Demo controls</h2><div class="row">
@@ -220,6 +221,7 @@ async function load(){
  $('s-mode').innerHTML=(s.mode==='demo'?'Demo mode':'<span class="dot" style="background:var(--ok)"></span>Live')+` <span class="mut">&middot; ${Math.round(s.audit_rate*100)}% of automatic actions still checked by you</span>`;
  $('s-email').innerHTML=!s.email.mailbox?'<span class="dot" style="background:var(--bad)"></span>No mailbox configured':s.email.live?'<span class="dot" style="background:var(--bad)"></span>Live: emails go to real recipients':`<span class="dot" style="background:var(--recall)"></span>Test mode: every approved email goes to <b>${esc(s.email.test_inbox||'(TEST_INBOX not set)')}</b>`;
  $('s-inbox').innerHTML=s.inbox.configured?(s.inbox.polling?'<span class="dot" style="background:var(--ok)"></span>Reading new mail every minute':'Connected, not reading on its own <span class="mut">(INBOX_POLL=0)</span>'):'Not connected';
+ $('s-tasks').innerHTML=s.tasks&&s.tasks.jira?`<span class="dot" style="background:var(--ok)"></span>Jira project <b>${esc(s.tasks.project)}</b>: assignments become real issues`:'Bizzii task board <span class="mut">(set JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY for Jira)</span>';
  $('s-ai').innerHTML=s.llm?'<span class="dot" style="background:var(--ok)"></span>On, with a confidence check on every draft':'Templates only';
  const byAg={};s.classes.forEach(c=>(byAg[c.agent]??=[]).push(c));
  for(const ag of AG){const st=s.agents[ag]||{active:false,missing:['unknown']};const list=byAg[ag]||[];
