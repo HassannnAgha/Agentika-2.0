@@ -15,6 +15,9 @@
 .toast{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:var(--r);padding:11px 13px;box-shadow:0 6px 24px rgba(0,0,0,.10);font-size:13px;animation:tin .25s ease-out}
 .toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}.toast.warn{border-left-color:var(--recall)}.toast b{display:block;font-size:14px;margin-bottom:2px}
 @keyframes tin{from{transform:translateY(10px);opacity:0}to{transform:none;opacity:1}}
+.try{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px;margin-top:10px}
+.try a.step{display:block;text-decoration:none;border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:#fff}.try a.step:hover{border-color:#A3A3A3}
+.try .n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--tx);color:#fff;font:600 12px var(--ui);margin-right:8px}
 .pulse{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}.hb{color:var(--ok)!important}
 #live div{display:flex;gap:10px}#live .mut{flex:none;font-family:var(--mono)}
 details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-bottom:6px}
@@ -27,6 +30,7 @@ details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-b
 <p class="lede">Four agents propose. The Risk-Trust Gate decides how much of you each action needs, from its risk and the agent's own record, and says why. Autonomy is earned from evidence and granted only with your consent, and you can always take it back.</p>
 <div id="banner"></div>
 <div id="toasts" aria-live="polite"></div>
+<div id="try"></div>
 <div class="stats" id="impact"></div>
 <div class="card" style="margin-top:12px"><div class="row"><span class="dot pulse" style="background:var(--ok)"></span><b>Live activity</b><span class="mut grow" id="live-sub"></span></div><div id="live" class="log" style="margin-top:6px"></div></div>
 <div id="week" style="margin-top:14px"></div>
@@ -75,7 +79,7 @@ details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-b
   <div class="out" id="out-marketing"></div></div>
 </div>
 
-<h2>Try to break it</h2>
+<h2 id="rt">Try to break it</h2>
 <div class="card"><div class="mut">Real attacks built from your own records, run through exactly the same gate as real work. Nothing is sent, nothing is queued, and no agent's record changes. Each assumes the AI was already fooled: the gate does not trust the model.</div>
  <div class="row" id="rt-btns" style="margin-top:10px"></div>
  <details style="margin-top:10px"><summary class="mut">Write your own attack</summary><div style="margin-top:8px">
@@ -154,8 +158,19 @@ function notice(s){const names=s.agent_names||{};
  if(lastLog!==null)for(const l of s.log){if(key(l)===lastLog)break;
   if(/^PROMOTED/.test(l.msg))toast('Trust earned',l.msg.replace(/^PROMOTED: /,''),'ok');
   else if(/^DEMOTED/.test(l.msg))toast('Trust lost',l.msg.replace(/^DEMOTED: /,''),'bad');
-  else if(/^check-in due/.test(l.msg))toast('Check-in due',l.msg.replace(/^check-in due: /,''),'warn')}
+  else if(/^check-in due/.test(l.msg))toast('Check-in due',l.msg.replace(/^check-in due: /,''),'warn');
+  else if(/^Operations is reading an email/.test(l.msg))toast('New email',l.msg.replace(/^Operations is reading an email /,''),'')}
  lastLog=key(s.log[0])}
+// ---- try it yourself: three real things a visitor can do in a minute
+let trySig='';
+function renderTry(s){let hide=false;try{hide=localStorage.getItem('bz-try')==='hidden'}catch(e){}
+ const addr=s.inbox&&s.inbox.polling?s.inbox.address:'';const sig=[s.onboarded,addr,hide].join('|');if(sig===trySig)return;trySig=sig;
+ if(!s.onboarded||hide){$('try').innerHTML='';return}
+ $('try').innerHTML=`<div class="card" style="margin-top:16px"><div class="row"><b>Try it yourself</b><span class="mut grow">Everything below is live: real email, the real gate, nothing staged.</span><button class="sm q" onclick="try{localStorage.setItem('bz-try','hidden')}catch(e){};trySig='';renderTry(S)">Hide</button></div>
+ <div class="try">${addr?`<a class="step" href="mailto:${esc(addr)}?subject=${encodeURIComponent('Question about a new website')}&body=${encodeURIComponent('Hi, we are looking for a new website with online booking. Could you tell us how you would approach it?')}"><span class="n">1</span><b>Email ${esc(addr)}</b><div class="mut" style="margin-top:4px">From any address. Operations reads it within a minute, drafts a reply and asks before anything is sent. Watch Live activity.</div></a>`
+  :`<a class="step" href="#out-operations" onclick="document.querySelector('#out-operations').closest('.agent').querySelector('details.work').open=true"><span class="n">1</span><b>Give Operations an email</b><div class="mut" style="margin-top:4px">Paste a client message into its card. It drafts a reply and asks before anything is sent.</div></a>`}
+  <a class="step" href="#rt"><span class="n">2</span><b>Try to break it</b><div class="mut" style="margin-top:4px">Fire a prompt injection, a fake price or a lookalike address at the gate and see which check stops it.</div></a>
+  <a class="step" href="#pend"><span class="n">3</span><b>Decide something</b><div class="mut" style="margin-top:4px">Approve, edit, or say why it is wrong. Each answer changes how close that agent is to acting alone.</div></a></div></div>`}
 // ---- when each agent last worked and works next (its own clock, not a button)
 function rel(ts,now){if(!ts)return'soon';const d=Math.round(ts-(now||Date.now()/1000));if(d<=45)return'any moment';const m=Math.round(d/60);return m<60?`in ${m} min`:`in ${Math.floor(m/60)} h ${m%60} min`}
 const hhmm=t=>t?String(t).slice(11,16):'';
@@ -315,7 +330,7 @@ async function loadOnce(){try{const r=await get('/api/compare');$('closer').inne
 function bar(v,t){return `<div class="mut">${v.toFixed(2)} / ${t.toFixed(2)}</div><div class="bar"><div class="fill" style="width:${v*100}%;background:${v>=t?'var(--ok)':'var(--blue)'}"></div><div class="tau" style="left:${t*100}%"></div></div>`}
 function route(c){if(c.floor)return['Always','Always asks: '+c.floor];if(!c.earned)return['Asks',c.path?c.path.text:'Asks first: '+c.why];return c.sig[3]==='full'?['Auto','Runs without asking (with your consent)']:['Recall','Runs after a recall window you can stop']}
 async function load(){
- let s;try{s=await get('/state')}catch(e){return}S=s;notice(s);
+ let s;try{s=await get('/state')}catch(e){return}S=s;notice(s);renderTry(s);
  $('pend-n').textContent=s.pending.length?`· ${s.pending.length}`:'';
  const sc=s.scheduler||{};
  $('live').innerHTML=s.log.length?s.log.slice(0,7).map(l=>`<div><span class="mut">${esc(l.t)}</span><span>${esc(l.msg)}</span></div>`).join(''):'<div class="mut">Waiting for the first piece of work.</div>';
