@@ -155,6 +155,16 @@ def test_scheduled_runs_wait_for_onboarding_then_show_up_in_the_activity_feed(re
     msgs = [l["msg"] for l in c.get("/state").json()["log"]]
     assert any(x.startswith("Marketing drafted a post") for x in msgs) and any(x.startswith("Operations checked 2 clients") for x in msgs)
 
+def test_demo_traffic_is_opt_in_labelled_routed_by_the_real_gate_and_capped(real):
+    assert server.run_demo_traffic() == {"skipped": "off"}
+    real.setenv("DEMO_TRAFFIC", "1"); assert server.run_demo_traffic() == {"skipped": "off"}      # nothing before onboarding
+    onboard2(); mailbox(real)
+    r = server.run_demo_traffic()
+    assert r["client"] in ("Orchid Clinic", "Harbor Logistics") and r["proposals"] and all("route" in p for p in r["proposals"])
+    assert any(l["msg"].startswith("Demo traffic:") and "fictional" in l["msg"] for l in c.get("/state").json()["log"])
+    assert c.get("/state").json()["demo_traffic"] is True
+    real.setenv("DEMO_TRAFFIC_MAX_WAITING", "1"); assert "already waiting" in server.run_demo_traffic()["skipped"]
+
 def test_the_mailbox_is_left_unread_until_a_business_is_set_up(monkeypatch):
     import inbox, time as _t
     calls = []

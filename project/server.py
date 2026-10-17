@@ -408,7 +408,7 @@ def state():
                 "business": STORE.profile["business"]["name"], "profile_source": STORE.profile.get("source"),
                 "agents": agent_status(STORE.profile), "agent_names": AGENT_NAMES, "llm": llm.available(),
                 "mode": "demo" if demo() else "real", "onboarded": STORE.onboarded(), "seeded_history": META["seeded"],
-                "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "now": time.time(),
+                "audit_rate": G.AUDIT_RATE, "scheduler": SCHED, "now": time.time(), "demo_traffic": demo_traffic_on(),
                 "inbox": {"configured": inbox.configured(), "polling": inbox.STATE["running"], "last_poll": inbox.STATE.get("last_poll"), "every": inbox.STATE.get("every"),
                           "address": os.getenv("IMAP_USER", "") if inbox.configured() else ""},
                 "tasks": {"jira": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None},
@@ -770,6 +770,49 @@ def run_marketing():
     log(f"Marketing drafted a post on \"{claims[i % len(claims)][:60]}\" for you to review.", kind="sweep")
     return {"drafted": out}
 
+# ------------------------------------------------------------------ demo traffic: the fictional clients of a demo company write in (labelled, opt-in)
+TRAFFIC_TOPICS = [
+    ("new_work", "asks the studio to take on a new piece of work for them (say what, in one or two sentences), and asks how to start"),
+    ("status", "asks for a quick update on where their project stands this week"),
+    ("unhappy", "politely complains that they have been waiting on an answer and feel a little forgotten"),
+    ("price", "asks how much an extra feature would cost and how long it would take"),
+    ("meeting", "asks for a short call next week to go over the next steps"),
+    ("thanks", "thanks the team for recent work and mentions a small change they would like"),
+]
+TRAFFIC_FALLBACK = {
+    "new_work": "Hi {first},\n\nWe would like to add an online booking page to our website so customers can pick a time themselves. Could your team take this on? How do we start?\n\n{contact}",
+    "status": "Hi {first},\n\nCould you give me a quick update on where things stand with our project this week?\n\nThanks,\n{contact}",
+    "unhappy": "Hi {first},\n\nI sent a question a while ago and have not heard back. We are starting to feel a little forgotten. Can someone get back to me?\n\n{contact}",
+    "price": "Hi {first},\n\nHow much would it cost to add a gallery page with our latest photos, and how long would it take?\n\n{contact}",
+    "meeting": "Hi {first},\n\nCould we have a short call next week to go over the next steps?\n\nBest,\n{contact}",
+    "thanks": "Hi {first},\n\nThanks for the recent changes, they look great. One small thing: could the phone number be bigger on mobile?\n\n{contact}",
+}
+
+def demo_traffic_on(): return os.getenv("DEMO_TRAFFIC") == "1"
+
+def run_demo_traffic():
+    """One fictional client of the (invented) demo business writes in. Only the message is generated; Operations reads it, the gate routes
+    every proposal and the owner decides, exactly as for real mail. Paused while the owner already has DEMO_TRAFFIC_MAX_WAITING items waiting."""
+    if not (demo_traffic_on() and STORE.onboarded()): return {"skipped": "off"}
+    waiting = sum(1 for a in PENDING.values() if a["status"] in ("awaiting", "recall"))
+    if waiting >= int(os.getenv("DEMO_TRAFFIC_MAX_WAITING", "12")): return {"skipped": f"{waiting} already waiting for you"}
+    clients = [c for c in STORE.clients() if c.get("status") != "past" and (c.get("contact") or {}).get("email")]
+    if not clients: return {"skipped": "no clients"}
+    n = int(persist.get("traffic_n", 0) or 0); persist.put("traffic_n", n + 1)
+    c = clients[n % len(clients)]; kind, what = TRAFFIC_TOPICS[(n // len(clients) + n) % len(TRAFFIC_TOPICS)]
+    owner, contact = STORE.profile["business"]["owner"].get("name") or "there", c["contact"].get("name") or c["name"]
+    msg = None
+    if llm.available():
+        msg = llm.json_call("Write a short, natural email (40 to 80 words) from a small-business client to the studio that works for them. "
+                            "No prices or dates unless they appear in the notes. Plain text, signed with the contact's name. Return {\"subject\": str, \"body\": str}.",
+                            json.dumps({"from": f"{contact}, {c['name']}", "to": owner, "the client": what, "notes on this client": c.get("notes", "")}))
+    if not (msg and msg.get("subject") and msg.get("body")):
+        msg = {"subject": {"new_work": "New work", "status": "Quick update?", "unhappy": "Still waiting", "price": "Cost of an extra page",
+                           "meeting": "Call next week?", "thanks": "Thanks, and one small thing"}[kind],
+               "body": TRAFFIC_FALLBACK[kind].format(first=owner.split()[0], contact=contact)}
+    log(f"Demo traffic: {c['name']} (a fictional client of the demo business) wrote in: \"{msg['subject'][:70]}\"", kind="traffic")
+    return {"client": c["name"], "kind": kind, "proposals": process_inbound(c["contact"]["email"], msg["subject"], msg["body"])}
+
 def _every(name, default, floor): return max(floor, int(os.getenv(name, str(default)))) * 60
 
 def start_scheduler():
@@ -778,19 +821,24 @@ def start_scheduler():
     if SCHED["running"] or demo() or os.getenv("AGENT_SCHEDULE", "1") == "0": return False
     SCHED["running"] = True
     now = time.time()
-    SCHED.update(next_scan=now + 60, next_prospect=now + 120, next_marketing=now + 150)   # relative to onboarding if it has not happened yet
+    SCHED.update(next_scan=now + 60, next_prospect=now + 120, next_marketing=now + 150, next_traffic=now + 90)   # relative to onboarding if it has not happened yet
     def loop():
         while True:
             time.sleep(15)
             try:
                 if not STORE.onboarded():                     # wait for a business instead of skipping a whole interval
-                    t = time.time(); SCHED.update(next_scan=t + 5, next_prospect=t + 20, next_marketing=t + 35); continue
+                    t = time.time(); SCHED.update(next_scan=t + 5, next_prospect=t + 20, next_marketing=t + 35, next_traffic=t + 60); continue
                 if time.time() >= SCHED["next_scan"]:
                     run_scans(); SCHED["next_scan"] = time.time() + _every("SCAN_EVERY_MIN", 360, 5)
-                if os.getenv("PROSPECT_AUTO", "1") != "0" and time.time() >= SCHED["next_prospect"]:
-                    run_prospecting(); SCHED["next_prospect"] = time.time() + _every("PROSPECT_EVERY_MIN", 720, 30)
+                if os.getenv("PROSPECT_AUTO", "1") != "0" and time.time() >= SCHED["next_prospect"] and not SCHED.get("prospecting"):
+                    SCHED["prospecting"] = True
+                    try: run_prospecting()
+                    finally: SCHED["prospecting"] = False
+                    SCHED["next_prospect"] = time.time() + _every("PROSPECT_EVERY_MIN", 720, 10)
+                if demo_traffic_on() and time.time() >= SCHED["next_traffic"]:
+                    run_demo_traffic(); SCHED["next_traffic"] = time.time() + _every("DEMO_TRAFFIC_MIN", 4, 1)
                 if os.getenv("MARKETING_AUTO", "1") != "0" and time.time() >= SCHED["next_marketing"]:
-                    run_marketing(); SCHED["next_marketing"] = time.time() + _every("MARKETING_EVERY_MIN", 1440, 30)
+                    run_marketing(); SCHED["next_marketing"] = time.time() + _every("MARKETING_EVERY_MIN", 1440, 10)
                 if time.localtime().tm_hour == int(os.getenv("DIGEST_HOUR", "18")) and SCHED.get("last_digest", "")[:10] != time.strftime("%Y-%m-%d"): send_digest()
             except Exception as e:
                 print(f"[scheduler] {type(e).__name__}: {e}")
