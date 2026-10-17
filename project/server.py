@@ -723,9 +723,20 @@ def run_prospecting():
     return res
 
 @app.post("/api/agents/sales/prospect")
-def agents_prospect():
+def agents_prospect(wait: bool = False):
+    """A search reads several websites and can outlast the platform's request timeout, so by default it runs in the background
+    and reports in Live activity. wait=true runs it inline (tests, scripts)."""
     if not STORE.onboarded(): raise HTTPException(409, "complete onboarding first")
-    return run_prospecting()
+    if wait: return run_prospecting()
+    if SCHED.get("prospecting"): return {"skipped": "Sales is already searching. Results appear in Live activity."}
+    def go():
+        SCHED["prospecting"] = True
+        try: run_prospecting()
+        except Exception as e: log(f"Sales search failed ({type(e).__name__})", kind="sweep")
+        finally: SCHED["prospecting"] = False
+    threading.Thread(target=go, daemon=True).start()
+    log("Sales started a search for new leads (you asked).", kind="sweep")
+    return {"skipped": "Sales is searching now. New leads and any campaign appear in Live activity within a minute or two."}
 
 def run_scans():
     """Scheduled Operations and Project Management sweeps: quiet clients and stalled tasks, never duplicating an open proposal."""
