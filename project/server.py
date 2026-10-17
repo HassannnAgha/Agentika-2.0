@@ -769,7 +769,8 @@ def task_status(tid: int, s: TaskStatus):
     t["status"], t["updated"] = s.status, time.time(); persist.put("tasks", tasks); return t
 
 @app.get("/api/jira/status")
-def jira_status(): return {"configured": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None}
+def jira_status(): return {"configured": jira.configured(), "project": os.getenv("JIRA_PROJECT_KEY") if jira.configured() else None,
+                           "url": os.getenv("JIRA_URL", "").rstrip("/") if jira.configured() else ""}
 
 @app.post("/api/demo/age_tasks")
 def age_tasks(days: float = 10):
@@ -1524,6 +1525,8 @@ def home(): return _page("index.html")
 def agents_page(): return _page("agents.html")
 @app.get("/leads", response_class=HTMLResponse)
 def leads_page(): return _page("leads.html")
+@app.get("/live", response_class=HTMLResponse)
+def live_page(): return _page("live.html")          # one working day, live: the four agents and the owner, for demos
 
 def boot():
     G.AUDIT_RATE = float(os.getenv("AUDIT_RATE", "0" if demo() else "0.1"))

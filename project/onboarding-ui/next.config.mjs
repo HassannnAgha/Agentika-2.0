@@ -8,6 +8,7 @@ const GATE = process.env.GATE_URL || 'http://127.0.0.1:8001';
 const toGate = [
   ['/gate', '/'],                       // approvals dashboard
   ['/leads', '/leads'],                 // lead generation page
+  ['/live', '/live'],                   // live view of a working day (demo)
   ['/static/:path*', '/static/:path*'],
   ['/state', '/state'],
   ['/scenario/:name', '/scenario/:name'],

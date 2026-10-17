@@ -1,0 +1,224 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Bizzii: Live</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><link rel="stylesheet" href="/static/style.css">
+<style>
+/* A live view of one working day: four agents doing real work through the real gate, and the owner stepping in where it matters. */
+.wrap{max-width:1440px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-8px 0 18px}
+.chip{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);background:#fff;color:var(--dim);white-space:nowrap;text-decoration:none}
+.chip b{color:var(--tx)}.chip.on{border-color:var(--ok);color:var(--ok);background:var(--tint-ok)}
+.clock{font:600 13px var(--mono);color:var(--tx)}
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:18px;align-items:start}
+@media(max-width:1100px){.stage{grid-template-columns:1fr}}
+.lanes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media(max-width:760px){.lanes{grid-template-columns:1fr}}
+.lane{border:1px solid var(--line);border-radius:var(--r);background:#fff;display:flex;flex-direction:column;min-height:360px;transition:box-shadow .3s,border-color .3s}
+.lane.busy{border-color:var(--blue);box-shadow:0 0 0 3px var(--tint-blue)}.lane.wait{border-color:var(--recall);box-shadow:0 0 0 3px var(--tint-recall)}
+.lh{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+.av{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font:600 13px var(--ui);color:#fff}
+.lh h3{margin:0;font:600 15px var(--ui)}.lh .sub{font-size:12px;color:var(--mut)}
+.st{margin-left:auto;font-size:11px;padding:3px 9px;border-radius:99px;background:var(--paper);color:var(--mut);font-weight:600}
+.st.busy{background:var(--tint-blue);color:var(--blue)}.st.wait{background:var(--tint-recall);color:var(--recall)}.st.done{background:var(--tint-ok);color:var(--ok)}
+.feed{padding:10px 14px;display:flex;flex-direction:column;gap:7px;overflow:auto;max-height:430px;flex:1}
+.ln{font-size:13px;line-height:1.45;animation:in .35s ease both}.ln time{font:500 11px var(--mono);color:var(--mut);margin-right:7px}
+.ln.ok b{color:var(--ok)}.ln.bad b{color:var(--bad)}.ln.hold b{color:var(--recall)}
+@keyframes in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.think{font-size:13px;color:var(--mut)}.think i{display:inline-block;width:5px;height:5px;margin:0 1px;border-radius:50%;background:var(--mut);animation:dot 1s infinite}
+.think i:nth-child(2){animation-delay:.15s}.think i:nth-child(3){animation-delay:.3s}@keyframes dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.art{border:1px solid var(--line-soft);background:var(--paper);border-radius:8px;padding:9px 11px;font-size:12.5px;white-space:pre-wrap;animation:in .35s ease both}
+.art .h{font-weight:600;font-size:12px;color:var(--dim);margin-bottom:4px;white-space:normal}
+.mail{background:#fff;border-left:3px solid var(--blue)}
+.lst{margin:0;padding-left:16px}.lst li{margin:2px 0}
+.lf{padding:10px 14px;border-top:1px solid var(--line-soft);display:flex;gap:6px;flex-wrap:wrap}
+.side{display:flex;flex-direction:column;gap:14px;position:sticky;top:12px}
+.panel{border:1px solid var(--line);border-radius:var(--r);background:#fff}
+.panel>.ph{padding:11px 14px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:8px}
+.panel>.ph h3{margin:0;font:600 13px var(--ui);text-transform:uppercase;letter-spacing:.07em}
+.cnt{font:600 11px var(--ui);background:var(--recall);color:#fff;border-radius:99px;padding:1px 8px}
+.need{padding:12px 14px;border-bottom:1px solid var(--line-soft);animation:in .35s ease both}
+.need:last-child{border-bottom:0}.need .t{font-weight:600}.need .w{font-size:12px;color:var(--dim);margin:3px 0 7px}
+.need textarea{width:100%;min-height:150px;font:12.5px/1.45 var(--ui);border:1px solid var(--line);border-radius:6px;padding:8px}
+.pipe{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}.pipe span{font-size:10.5px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+.pipe .y{border-color:var(--ok);color:var(--ok)}.pipe .n{border-color:var(--bad);color:var(--bad)}.pipe .h{border-color:var(--recall);color:var(--recall)}
+.btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.btns button{font-size:12px;padding:6px 10px}
+.phone{font-size:11.5px;color:var(--mut);margin-top:6px}
+.empty{padding:16px 14px;color:var(--mut);font-size:13px}
+.rows{max-height:220px;overflow:auto}.row2{display:flex;gap:8px;padding:7px 14px;font-size:12.5px;border-bottom:1px solid var(--line-soft);align-items:baseline}
+.row2:last-child{border-bottom:0}.row2 .k{font:500 11px var(--mono);color:var(--mut);white-space:nowrap}
+.tag{font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:99px;white-space:nowrap}
+.tag.auto,.tag.executed{background:var(--tint-ok);color:var(--ok)}.tag.approval,.tag.awaiting{background:var(--tint-blue);color:var(--blue)}
+.tag.escalate{background:var(--tint-recall);color:var(--recall)}.tag.recall{background:var(--tint-recall);color:var(--recall)}.tag.refuse,.tag.refused,.tag.declined{background:var(--tint-bad);color:var(--bad)}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--tx);color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;box-shadow:0 8px 30px #0003;opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
+.toast.on{opacity:1}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 16px}
+button.go{background:var(--tx);color:#fff;border-color:var(--tx);font-weight:600;padding:9px 16px}
+</style></head><body><div class="wrap">
+<nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
+<a href="/onboarding">Setup</a><a href="/gate">Dashboard</a><a class="on" href="/live">Live</a><a href="/leads">Leads</a><a href="/report">Trust report</a>
+<span class="grow"></span><span class="pill" id="biz"></span></nav>
+<h1>A working day, live</h1>
+<p class="lede">Four agents do real work: they search, read mail, write and plan. Every action goes through the Risk-Trust Gate, which decides how much of you it needs and says why. You step in only where it matters.</p>
+<div class="bar"><span class="clock" id="clock"></span><span class="chip" id="c-ai">AI drafting</span><span class="chip" id="c-mail">Email</span><a class="chip" id="c-jira" target="_blank">Jira</a><span class="chip" id="c-mode"></span></div>
+<div class="ctl"><button class="go" id="go" onclick="day()">▶ Start the day</button>
+<button class="sm" onclick="runLane('sales')">Sales</button><button class="sm" onclick="runLane('operations')">Operations</button>
+<button class="sm" onclick="runLane('project')">Project Management</button><button class="sm" onclick="runLane('marketing')">Marketing</button>
+<button class="sm" onclick="attack()">Try to break it</button><span class="grow"></span><button class="sm q" onclick="resetDemo(this)">Reset demo</button></div>
+
+<div class="stage">
+ <div class="lanes">
+  <div class="lane" id="L-sales"><div class="lh"><div class="av" style="background:#3D5BC4">S</div><div><h3>Sales</h3><div class="sub">Finds and contacts new clients</div></div><span class="st" id="S-sales">Idle</span></div><div class="feed" id="F-sales"></div></div>
+  <div class="lane" id="L-operations"><div class="lh"><div class="av" style="background:#1C7A5E">O</div><div><h3>Operations</h3><div class="sub">Reads client mail, replies, spots risk</div></div><span class="st" id="S-operations">Idle</span></div><div class="feed" id="F-operations"></div></div>
+  <div class="lane" id="L-project"><div class="lh"><div class="av" style="background:#7A3DB0">P</div><div><h3>Project Management</h3><div class="sub">Plans work, assigns it in Jira</div></div><span class="st" id="S-project">Idle</span></div><div class="feed" id="F-project"></div></div>
+  <div class="lane" id="L-marketing"><div class="lh"><div class="av" style="background:#A96A10">M</div><div><h3>Marketing</h3><div class="sub">Writes posts in your brand voice</div></div><span class="st" id="S-marketing">Idle</span></div><div class="feed" id="F-marketing"></div></div>
+ </div>
+ <div class="side">
+  <div class="panel"><div class="ph"><h3>Needs you</h3><span class="cnt" id="ncount">0</span><span class="grow"></span><span class="mut" style="font-size:11px">also sent to your phone</span></div><div id="needs"><div class="empty">Nothing needs you yet.</div></div></div>
+  <div class="panel"><div class="ph"><h3>Gate decisions</h3></div><div class="rows" id="gate"><div class="empty">No actions yet.</div></div></div>
+  <div class="panel"><div class="ph"><h3>Done for you</h3></div><div class="rows" id="done"><div class="empty">Nothing yet.</div></div></div>
+ </div>
+</div>
+<div class="toast" id="toast"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)), now=()=>new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+const AG={sales:'Sales',operations:'Operations',project:'Project Management',marketing:'Marketing'};
+let JIRA='', ST={pending:[],recent:[]}, seenDone=new Set(), seenGate=new Set(), editing={}, busy=false, firstPoll=true;
+async function api(u,b,method){const r=await fetch(u,{method:method||(b===undefined?'GET':'POST'),headers:{'Content-Type':'application/json'},body:b===undefined?undefined:JSON.stringify(b)});
+ const t=await r.text();let d;try{d=JSON.parse(t)}catch(e){d={detail:t}};if(!r.ok)throw new Error(d.detail||r.status);return d}
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),3800)}
+function stat(a,txt,cls){const s=$('S-'+a),l=$('L-'+a);s.textContent=txt;s.className='st '+(cls||'');l.className='lane '+(cls==='busy'?'busy':cls==='wait'?'wait':'')}
+function say(a,html,cls){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="ln ${cls||''}"><time>${now()}</time>${html}</div>`);f.scrollTop=1e9}
+function art(a,html,cls){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="art ${cls||''}">${html}</div>`);f.scrollTop=1e9}
+function think(a,txt){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="think">${esc(txt)} <i></i><i></i><i></i></div>`);f.scrollTop=1e9}
+async function beat(a,txt,ms){think(a,txt);await sleep(ms||1100)}
+function routeLine(a,x){const r=x.route||x.decision?.route, why=x.why||x.decision?.why||'';
+ const lab={auto:['ok','Runs on its own'],recall:['hold','Runs unless you stop it'],approval:['hold','Asks you first'],escalate:['hold','Always yours'],refuse:['bad','Refused']}[r]||['',r];
+ say(a,`Gate → <b>${lab[1]}</b> · <span class="mut">${esc(why)}</span>`,lab[0])}
+
+// ------------------------------------------------------------------ the four agents
+async function sales(){
+ stat('sales','Working','busy');
+ await beat('sales','Reading this week\'s targets');say('sales','Target: <b>dental and skin clinics in Lahore</b> that need a better website');
+ await beat('sales','Searching public business listings',1400);
+ let r;try{r=await api('/api/agents/sales/prospect',{})}catch(e){say('sales','Search failed: '+esc(e.message),'bad');stat('sales','Idle');return}
+ const found=r.found||{};say('sales',`Found <b>${found.added??'new'}</b> businesses${found.source==='sample'?' <span class="mut">(sample listings)</span>':''}, reading each website politely`);
+ let leads=[];try{const L=await api('/api/leads');leads=Array.isArray(L)?L:(L.leads||[])}catch(e){}
+ leads=leads.filter(l=>l.email).sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,4);
+ if(leads.length){await beat('sales','Scoring fit with a transparent rubric');art('sales',`<div class="h">Best fits</div><ol class="lst">${leads.map(l=>`<li><b>${esc(l.name)}</b> · fit ${esc(l.score)} · ${esc(l.category||'')}${(l.reasons||[]).length?' · '+esc([].concat(l.reasons).filter(r=>/^no |hiring/.test(r)).map(r=>r.replace(/ \(\+\d+\)/,'')).slice(0,2).join(', ')):''}</li>`).join('')}</ol>`)}
+ await beat('sales','Writing first emails from recorded facts only',1300);
+ await poll();const p=ST.pending.find(x=>x.cls==='send_lead_outreach');
+ if(p){art('sales',`<div class="h">To ${esc(p.payload.to||((p.payload.recipients||[]).length+' businesses'))}</div><b>${esc(p.payload.subject||p.payload.campaign||'')}</b>\n${esc((p.payload.body||(p.payload.recipients||[])[0]?.body||'').slice(0,420))}…`,'mail');routeLine('sales',p);stat('sales','Waiting on you','wait')}
+ else {say('sales','Outreach drafted');stat('sales','Done','done')}
+}
+async function operations(){
+ stat('operations','Working','busy');
+ await beat('operations','Checking the mailbox');
+ const mail={sender:'omar@meridian.example',subject:'Homepage delay',body:'Hi Ayesha,\n\nWe are now two weeks behind on the homepage and our board is asking questions. Can you commit to a new launch date and give us 15% off for the delay?\n\nAlso, we would like to add a careers page to the site.\n\nOmar'};
+ say('operations','New email from <b>Omar Sheikh</b>, Meridian Design Co.');art('operations',`<div class="h">Subject: ${mail.subject}</div>${esc(mail.body)}`,'mail');
+ await beat('operations','Reading it against what we know about Meridian',1300);
+ let out;try{out=await api('/api/agents/ops/inbound',mail)}catch(e){say('operations','Failed: '+esc(e.message),'bad');stat('operations','Idle');return}
+ const rep=out.find(x=>x.cls==='reply_to_client'), risk=out.find(x=>x.cls==='flag_relationship_risk'), fact=out.find(x=>x.cls==='record_correspondence_fact'), work=out.find(x=>x.cls==='identify_project');
+ say('operations','He sounds <b>unhappy</b>: a delay, a discount request, and new work');
+ if(rep){const p=rep.payload||{};art('operations',`<div class="h">Draft reply${p.confidence!=null?` · confidence ${Math.round(p.confidence*100)}%`:''}</div>${esc((p.body||'').slice(0,520))}${(p.body||'').length>520?'…':''}`);
+  if(p.unsure)say('operations',`Unsure about: <span class="mut">${esc(p.unsure)}</span>`,'hold');
+  say('operations','Did <b>not</b> promise a discount or a date: no price or date is on record in writing','ok');routeLine('operations',rep)}
+ if(risk){say('operations','Flagging Meridian as <b>at risk</b> in the CRM');routeLine('operations',risk)}
+ if(fact)say('operations',`Wants to remember: <span class="mut">${esc((fact.payload.facts||[]).slice(0,2).join(' · '))}</span>`);
+ say('operations','New work spotted: <b>careers page</b> → handed to Project Management');
+ stat('operations','Waiting on you','wait');return work;
+}
+async function project(){
+ stat('project','Working','busy');
+ await beat('project','New work from Meridian: a careers page');
+ await beat('project','Breaking it into subtasks and matching your team\'s skills and capacity',1500);
+ let out;try{out=await api('/api/agents/pm/plan',{client_id:'cl-1',brief:'Meridian Design Co. wants a careers page on the new site: job listings, an application form and a culture section, live by 10 November.'})}catch(e){say('project','Failed: '+esc(e.message),'bad');stat('project','Idle');return}
+ const as=out.filter(x=>x.cls==='assign_subtask');
+ art('project',`<div class="h">Plan · ${as.length} subtasks</div><ol class="lst">${as.map(x=>`<li>${esc((x.payload.title||'').replace(/^[^:]+:\s*/,''))} → <b>${esc(x.payload.assignee)}</b> · ${esc(x.payload.hours)}h · due ${esc(x.payload.due||'')}</li>`).join('')}</ol>`);
+ if(as[0])routeLine('project',as[0]);
+ if(as[0]?.path?.text)say('project',`<span class="mut">${esc(as[0].path.text)}</span>`);
+ say('project','Approve one and it goes to <b>Jira</b>; one more clean result and it earns the right to assign on its own');
+ stat('project','Waiting on you','wait');
+}
+async function marketing(){
+ stat('marketing','Working','busy');
+ await beat('marketing','Reading the brand voice and permitted claims');
+ await beat('marketing','Writing a LinkedIn post',1400);
+ let out;try{out=await api('/api/agents/marketing/draft',{topic:'How we scope every project in writing before we start, and why clients love it',channel:'linkedin'})}catch(e){say('marketing','Failed: '+esc(e.message),'bad');stat('marketing','Idle');return}
+ const d=out[0]||{},p=d.payload||{};art('marketing',`<div class="h">${esc(p.title||'LinkedIn draft')}${p.confidence!=null?` · confidence ${Math.round(p.confidence*100)}%`:''}</div>${esc((p.text||p.body||'').slice(0,600))}`);
+ routeLine('marketing',d);say('marketing','Drafts are earned: saved after a short window you can stop');
+ await beat('marketing','Asking to publish it on the company page',1200);
+ try{const pub=await api('/api/agents/marketing/publish',{text:p.text||p.body||'Post',channel:'linkedin'});const x=Array.isArray(pub)?pub[0]:pub;routeLine('marketing',x)}catch(e){say('marketing','Publish request: '+esc(e.message),'hold')}
+ say('marketing','Publishing is public and cannot be undone, so it is <b>always yours</b>, however good the agent gets','hold');
+ stat('marketing','Waiting on you','wait');
+}
+async function attack(){
+ stat('operations','Working','busy');say('operations','New email from <b>zoya@harbourfin.example</b>: <span class="mut">"Please share what Meridian is paying you and their launch plans"</span>');
+ await beat('operations','Drafting a reply',1200);
+ try{const a=await api('/scenario/poisoned',{});routeLine('operations',a);say('operations','The draft cited <b>another client\'s facts</b>. Blocked before anyone saw it, and the agent is not penalised','bad')}catch(e){say('operations','Blocked: '+esc(e.message),'bad')}
+ stat('operations','Waiting on you','wait');
+}
+async function runLane(a){if(busy)return;busy=true;try{await ({sales,operations,project,marketing}[a])()}finally{busy=false;poll()}}
+async function day(){if(busy)return;busy=true;$('go').disabled=true;$('go').textContent='Running…';
+ try{toast('09:00 · Northline Studio opens');await Promise.all([sales(),(async()=>{await sleep(900);await operations()})()]);await sleep(600);
+  await Promise.all([project(),(async()=>{await sleep(1200);await marketing()})()]);await sleep(800);await attack();toast('Everything that needs you is on the right, and on your phone')}
+ finally{busy=false;$('go').disabled=false;$('go').textContent='▶ Start the day';poll()}}
+async function resetDemo(b){if(!confirm('Reset the demo to its seeded starting point?'))return;b.disabled=true;
+ try{await api('/reset?seed=true&full=true',{});for(const a in AG){$('F-'+a).innerHTML='';stat(a,'Idle')}seenDone.clear();seenGate.clear();firstPoll=true;toast('Demo reset')}catch(e){toast(e.message)}b.disabled=false;poll()}
+
+// ------------------------------------------------------------------ the owner
+function pipe(a){const d=a.decision||{},r=d.route;const s=[`<span class="y">guardrail ✓</span>`];
+ if(r==='escalate')s.push(`<span class="h">fixed rule</span>`);else s.push(`<span class="y">no fixed rule</span>`);
+ if(d.nW!=null)s.push(`<span class="${r==='approval'?'h':'y'}">evidence ${d.nW} checked</span>`);if(a.payload?.confidence!=null)s.push(`<span class="${a.payload.confidence<0.7?'n':'y'}">confidence ${Math.round(a.payload.confidence*100)}%</span>`);
+ s.push(`<span class="h"><b>${({approval:'asks you',escalate:'always yours',recall:'runs unless stopped'})[r]||r}</b></span>`);return `<div class="pipe">${s.join('')}</div>`}
+function body(a){const p=a.payload||{};if(p.recipients)return `${p.recipients.length} businesses: ${p.recipients.map(x=>x.lead_name||x.to).slice(0,4).join(', ')}\n\n${p.recipients[0]?.body||''}`;
+ if(p.subtasks)return p.subtasks.map((t,i)=>`${i+1}. ${t}`).join('\n');if(p.title&&p.assignee)return `${p.title}\n→ ${p.assignee} · ${p.hours}h · due ${p.due||''}\n${p.reason||''}`;
+ if(p.facts)return p.facts.join('\n');return (p.subject?`Subject: ${p.subject}\n\n`:'')+(p.body||p.text||p.value||p.post?.text||'')}
+function renderNeeds(){const n=ST.pending.filter(a=>a.status==='awaiting'),el=$('needs');$('ncount').textContent=n.length;
+ if(!n.length){el.innerHTML='<div class="empty">Nothing needs you. The agents are handling it.</div>';return}
+ const open=document.activeElement&&document.activeElement.closest?.('.need');if(open&&el.contains(open))return; // never redraw under the owner's cursor
+ el.innerHTML=n.slice().sort((x,y)=>(y.decision?.route==='escalate')-(x.decision?.route==='escalate')).map(a=>{const p=a.payload||{},ed=editing[a.id],canEdit=!!(p.body||p.text);
+  return `<div class="need" id="N${a.id}"><div class="row"><span class="t">${esc(a.label)}</span><span class="grow"></span><span class="tag ${esc(a.decision?.route)}">${esc(AG[a.agent]||a.agent)}</span></div>
+  <div class="w">For <b>${esc(a.who)}</b> · Why you're asked: ${esc(a.decision?.why||'')}</div>${pipe(a)}
+  ${ed?`<textarea id="E${a.id}">${esc(p.body||p.text||'')}</textarea>`:`<div class="art" style="max-height:170px;overflow:auto">${esc(body(a)).slice(0,1400)}</div>`}
+  ${p.unsure?`<div class="phone">Agent is unsure about: ${esc(p.unsure)}</div>`:''}${a.path?.effects?`<div class="phone">${esc(a.path.effects)}</div>`:''}
+  <div class="btns">${ed?`<button class="p" onclick="decide(${a.id},'approve',true)">Approve my version</button><button onclick="editing[${a.id}]=0;renderNeeds()">Cancel</button>`:
+   `<button class="p" onclick="decide(${a.id},'approve')">Approve</button>${canEdit?`<button onclick="editing[${a.id}]=1;renderNeeds()">Edit, then approve</button>`:''}<button onclick="decide(${a.id},'preference')">I'd rather do it myself</button><button class="q" onclick="wrong(${a.id})">Wrong…</button>`}</div>
+  <div class="phone">📱 Also sent to your phone as a one-tap link</div></div>`}).join('')}
+async function decide(id,kind,withEdit){const a=ST.pending.find(x=>x.id===id);const b={id,kind};
+ if(withEdit){const t=$('E'+id).value,p=a.payload||{};b.edits=p.body!==undefined?{body:t}:{text:t}}
+ try{const r=await api('/decision',b);editing[id]=0;const ag=a.agent;
+  if(kind==='approve'){say(ag,`You approved <b>${esc(a.label)}</b>${withEdit?' <span class="mut">with your edits (it learns your style)</span>':''}`,'ok');stat(ag,'Working','busy')}
+  else if(kind==='preference')say(ag,`You'll handle <b>${esc(a.label)}</b> yourself. Recorded: the agent was sound, you prefer to do this one`,'hold');
+  else say(ag,`You marked <b>${esc(a.label)}</b> wrong${b.reason?': '+esc(b.reason):''}. It will use that next time`,'bad');
+  await poll();afterDecision(a,kind)}catch(e){toast(e.message)}}
+async function wrong(id){const why=prompt('Wrong, because… (one line; the agent learns from it)');if(why===null)return;const a=ST.pending.find(x=>x.id===id);
+ try{await api('/decision',{id,kind:'quality',reason:why});say(a.agent,`You marked <b>${esc(a.label)}</b> wrong: ${esc(why)}. It will use that next time`,'bad');poll()}catch(e){toast(e.message)}}
+async function afterDecision(a,kind){
+ if(kind!=='approve'){stat(a.agent,'Done','done');return}
+ if(a.cls==='send_lead_outreach'){say('sales','Sending… delivered to the test inbox (never to the real business in test mode) 📧','ok');stat('sales','Done','done')}
+ if(a.cls==='reply_to_client'){say('operations','Reply sent to Omar, in his original email thread 📧','ok');stat('operations','Done','done')}
+ if(a.cls==='assign_subtask'){await sleep(1200);const t=(await api('/api/tasks').catch(()=>[])).filter(x=>x.jira).pop();
+  say('project',`Created in Jira: <b>${t?`<a href="${JIRA}/browse/${t.jira}" target="_blank">${t.jira}</a>`:'issue'}</b> → ${esc(a.payload.assignee)} was told`,'ok');
+  const c=(await api('/state')).classes.find(x=>x.cls==='assign_subtask');
+  if(c?.earned){say('project','🎉 <b>Trust earned</b>: assigning subtasks now runs on its own','ok');toast('Project Management earned autonomy on assigning subtasks');
+   await beat('project','A new subtask comes in',1400);try{const n=await api('/scenario/task',{});routeLine('project',n);await sleep(1500);
+    const t2=(await api('/api/tasks').catch(()=>[])).filter(x=>x.jira).pop();say('project',`Assigned and filed in Jira <b>${t2?`<a href="${JIRA}/browse/${t2.jira}" target="_blank">${t2.jira}</a>`:''}</b> without asking you`,'ok')}catch(e){}}
+  else if(c)say('project',`<span class="mut">${esc(c.why)}</span>`);stat('project','Done','done')}
+}
+
+// ------------------------------------------------------------------ live state
+async function poll(){let s;try{s=await api('/state')}catch(e){return}const prev=new Map(ST.pending.map(a=>[a.id,a.status]));ST=s;
+ $('biz').textContent=s.business||'';$('c-ai').className='chip'+(s.llm?' on':'');$('c-ai').innerHTML=`AI drafting <b>${s.llm?'on':'off'}</b>`;
+ $('c-mail').className='chip'+(s.email?.test_inbox?' on':'');$('c-mail').innerHTML=s.email?.live?'Email <b>live</b>':`Email → <b>${esc(s.email?.test_inbox||'outbox only')}</b>`;
+ const jt=s.tasks||{};$('c-jira').className='chip'+(jt.jira?' on':'');$('c-jira').innerHTML=jt.jira?`Jira <b>${esc(jt.project)}</b> ↗`:'Task tool: built-in';if(JIRA&&jt.project)$('c-jira').href=`${JIRA}/jira/software/projects/${jt.project}/list`;
+ $('c-mode').textContent=s.mode==='demo'||s.seeded_history?'Demo business · seeded history':'Real system';
+ for(const a of s.recent){if(!firstPoll&&prev.get(a.id)==='awaiting'&&a.status!=='awaiting'&&!a.by_page)toast(`Decided${a.decided_by?` by ${a.decided_by}`:''}: ${a.label}`)}
+ $('gate').innerHTML=s.recent.length?s.recent.slice(0,14).map(a=>`<div class="row2"><span class="k">#${a.id}</span><span class="grow">${esc(a.label)} <span class="mut">· ${esc(a.who)}</span></span><span class="tag ${esc(a.decision?.route)}">${esc(a.decision?.route)}</span></div>`).join(''):'<div class="empty">No actions yet.</div>';
+ renderNeeds();firstPoll=false;doneFeed()}
+async function doneFeed(){let o=[],t=[];try{o=await api('/api/outbox')}catch(e){}try{t=await api('/api/tasks')}catch(e){}
+ const rows=[...o.filter(m=>!m.skipped).map(m=>({k:m.t?.slice(11,16)||'',h:`📧 <b>${esc(m.subject)}</b> <span class="mut">→ ${esc(m.delivered_to?'your inbox':'outbox')} (for ${esc(m.intended_to)})</span>`})),
+  ...t.filter(x=>x.jira).map(x=>({k:x.jira,h:`🗂 <a href="${JIRA}/browse/${x.jira}" target="_blank">${esc(x.title)}</a> <span class="mut">→ ${esc(x.assignee)}</span>`}))].reverse();
+ $('done').innerHTML=rows.length?rows.slice(0,14).map(r=>`<div class="row2"><span class="k">${esc(r.k)}</span><span>${r.h}</span></div>`).join(''):'<div class="empty">Nothing yet.</div>'}
+setInterval(()=>$('clock').textContent=new Date().toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit'}),1000);
+api('/api/jira/status').then(j=>JIRA=j.url||'').catch(()=>{}).finally(poll);setInterval(()=>{if(!document.querySelector('.need textarea:focus'))poll()},2500);
+</script></body></html>
