@@ -18,6 +18,19 @@
 .try{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px;margin-top:10px}
 .try a.step{display:block;text-decoration:none;border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:#fff}.try a.step:hover{border-color:#A3A3A3}
 .try .n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--tx);color:#fff;font:600 12px var(--ui);margin-right:8px}
+:root{--c-operations:#3D5BC4;--c-project:#1C7A5E;--c-sales:#A96A10;--c-marketing:#8B4FB8}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:14px 0 4px}
+.flow .nd{padding:6px 12px;border-radius:99px;border:1px solid var(--line);background:var(--paper);font-size:12px;font-weight:500;color:var(--dim);transition:all .35s}
+.flow .nd.lit{background:var(--tx);color:#fff;border-color:var(--tx);box-shadow:0 0 0 4px rgba(10,10,10,.08)}
+.flow .ar{color:var(--mut);font-size:12px}.flow .grp{display:flex;flex-direction:column;gap:4px}
+.lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;margin-top:12px}
+.lane{border:1px solid var(--line);border-top:3px solid var(--lc);border-radius:var(--r);padding:12px;background:#fff;transition:box-shadow .4s}
+.lane.fresh{box-shadow:0 0 0 3px color-mix(in srgb,var(--lc) 22%,transparent)}
+.lane .lh{display:flex;align-items:center;gap:8px}.lane .lh b{font:600 16px var(--display)}.lane .ld{width:9px;height:9px;border-radius:50%;background:var(--lc)}
+.lane .now{font-size:13px;margin:8px 0 6px;min-height:38px;line-height:1.4}.lane .now em{font-style:normal;color:var(--lc);font-weight:600}
+.lane svg{width:100%;height:34px;display:block}.lane .cap{font-size:11px;color:var(--mut);display:flex;justify-content:space-between}
+.lane ul{list-style:none;margin:8px 0 0;padding:0;font-size:12px;color:var(--dim)}.lane li{padding:4px 0;border-top:1px solid var(--line-soft);display:flex;gap:6px}
+.lane li .tm{font-family:var(--mono);color:var(--mut);flex:none}
 .pulse{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}.hb{color:var(--ok)!important}
 #live div{display:flex;gap:10px}#live .mut{flex:none;font-family:var(--mono)}
 details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-bottom:6px}
@@ -32,7 +45,12 @@ details.hood>summary{font:600 15px var(--ui)}details.hood[open]>summary{margin-b
 <div id="toasts" aria-live="polite"></div>
 <div id="try"></div>
 <div class="stats" id="impact"></div>
-<div class="card" style="margin-top:12px"><div class="row"><span class="dot pulse" style="background:var(--ok)"></span><b>Live activity</b><span class="mut grow" id="live-sub"></span></div><div id="live" class="log" style="margin-top:6px"></div></div>
+<div class="card board" style="margin-top:12px">
+ <div class="row"><span class="dot pulse" style="background:var(--ok)"></span><b style="font:600 18px var(--display)">Agents at work</b><span class="mut grow" id="live-sub"></span></div>
+ <div class="flow" id="flow"></div>
+ <div class="lanes" id="lanes"></div>
+ <details style="margin-top:10px"><summary class="mut">Live activity, everything in order</summary><div id="live" class="log" style="margin-top:6px"></div></details>
+</div>
 <div id="week" style="margin-top:14px"></div>
 
 <h2>Waiting on you <span class="mut" id="pend-n" style="text-transform:none;letter-spacing:0"></span></h2><div id="pend" class="grid"></div><div class="row" id="pend-more" style="margin-top:8px"></div>
@@ -171,6 +189,24 @@ function renderTry(s){let hide=false;try{hide=localStorage.getItem('bz-try')==='
   :`<a class="step" href="#out-operations" onclick="document.querySelector('#out-operations').closest('.agent').querySelector('details.work').open=true"><span class="n">1</span><b>Give Operations an email</b><div class="mut" style="margin-top:4px">Paste a client message into its card. It drafts a reply and asks before anything is sent.</div></a>`}
   <a class="step" href="#rt"><span class="n">2</span><b>Try to break it</b><div class="mut" style="margin-top:4px">Fire a prompt injection, a fake price or a lookalike address at the gate and see which check stops it.</div></a>
   <a class="step" href="#pend"><span class="n">3</span><b>Decide something</b><div class="mut" style="margin-top:4px">Approve, edit, or say why it is wrong. Each answer changes how close that agent is to acting alone.</div></a></div></div>`}
+// ---- the board: what each agent is doing right now, its last moves, and how busy it has been
+const LANE={operations:'Operations',project:'Project Management',sales:'Sales',marketing:'Marketing'};
+function plain(m){return m.replace(/ -> (APPROVAL|ESCALATE)(: .*)?$/,': waiting for you').replace(/ -> RECALL(: .*)?$/,': runs on its own unless you stop it').replace(/ -> AUTO(: .*)?$/,': doing it on its own').replace(/ -> REFUSE: /,': blocked by the gate, ')}
+function renderBoard(s){const now=s.now||Date.now()/1000,by={operations:[],project:[],sales:[],marketing:[]};
+ s.log.forEach(l=>{if(l.agent&&by[l.agent])by[l.agent].push(l)});
+ const B=10,W=180,counts={};let mx=1;
+ for(const ag in by){counts[ag]=Array(B).fill(0);by[ag].forEach(l=>{const age=now-(l.ts||0);if(age>=0&&age<1800)counts[ag][B-1-Math.floor(age/180)]++});mx=Math.max(mx,...counts[ag])}
+ $('lanes').innerHTML=Object.keys(LANE).map(ag=>{const ev=by[ag],last=ev[0],fresh=last&&now-last.ts<12,recent=last&&now-last.ts<300;
+  const bars=counts[ag].map((n,i)=>`<rect x="${i*(W/B)+1}" y="${34-Math.max(2,n/mx*32)}" width="${W/B-3}" height="${Math.max(2,n/mx*32)}" rx="2" fill="var(--lc)" opacity="${n?0.85:0.18}"/>`).join('');
+  return `<div class="lane${fresh?' fresh':''}" style="--lc:var(--c-${ag})"><div class="lh"><span class="ld${recent?' pulse':''}"></span><b>${LANE[ag]}</b></div>
+   <div class="now">${recent?`<em>Now</em> ${esc(plain(last.msg))}`:`<span class="mut">${esc(heartbeat(ag,s).replace(/<[^>]+>/g,''))}</span>`}</div>
+   <svg viewBox="0 0 ${W} 34" preserveAspectRatio="none">${bars}</svg><div class="cap"><span>30 min ago</span><span>${counts[ag].reduce((a,b)=>a+b,0)} actions</span><span>now</span></div>
+   <ul>${ev.slice(recent?1:0,(recent?1:0)+3).map(l=>`<li><span class="tm">${esc(l.t.slice(0,5))}</span><span>${esc(plain(l.msg))}</span></li>`).join('')||'<li class="mut">Nothing yet</li>'}</ul></div>`}).join('');
+ const lit=k=>s.log.some(l=>now-(l.ts||0)<20&&k(l));
+ const nodes=[['Client email',l=>l.kind==='traffic'||/^Operations is reading/.test(l.msg)],['Operations',l=>l.agent==='operations'],['Sales',l=>l.agent==='sales'],['Marketing',l=>l.agent==='marketing'],
+  ['Risk-Trust Gate',l=>!!l.route],['You',l=>l.route==='approval'||l.route==='escalate'],['Project Management',l=>l.agent==='project'],['Done',l=>/^done|done_alone/.test(l.kind||'')]];
+ const N=nodes.map(([n,k])=>`<span class="nd${lit(k)?' lit':''}">${n}</span>`);
+ $('flow').innerHTML=`<span class="grp">${N[0]}</span><span class="ar">&rarr;</span><span class="grp">${N[1]}${N[2]}${N[3]}</span><span class="ar">&rarr;</span>${N[4]}<span class="ar">&rarr;</span>${N[5]}<span class="ar">&rarr;</span>${N[6]}<span class="ar">&rarr;</span>${N[7]}`}
 // ---- when each agent last worked and works next (its own clock, not a button)
 function rel(ts,now){if(!ts)return'soon';const d=Math.round(ts-(now||Date.now()/1000));if(d<=45)return'any moment';const m=Math.round(d/60);return m<60?`in ${m} min`:`in ${Math.floor(m/60)} h ${m%60} min`}
 const hhmm=t=>t?String(t).slice(11,16):'';
@@ -333,7 +369,8 @@ async function load(){
  let s;try{s=await get('/state')}catch(e){return}S=s;notice(s);renderTry(s);
  $('pend-n').textContent=s.pending.length?`· ${s.pending.length}`:'';
  const sc=s.scheduler||{};
- $('live').innerHTML=s.log.length?s.log.slice(0,7).map(l=>`<div><span class="mut">${esc(l.t)}</span><span>${esc(l.msg)}</span></div>`).join(''):'<div class="mut">Waiting for the first piece of work.</div>';
+ $('live').innerHTML=s.log.length?s.log.slice(0,25).map(l=>`<div><span class="mut">${esc(l.t)}</span><span>${esc(plain(l.msg))}</span></div>`).join(''):'<div class="mut">Waiting for the first piece of work.</div>';
+ renderBoard(s);
  $('live-sub').textContent=!s.onboarded?'· the agents start as soon as setup is finished':sc.running?`· working on their own · next sweep ${rel(sc.next_scan,s.now)}`+(s.inbox.polling?' · reading the mailbox every minute':''):'· schedule off: the agents work when you press their buttons';
  $('biz').textContent=s.onboarded?s.business:'No business set up yet';$('title').textContent=s.onboarded?s.business:'Your back office';
  $('democtl').style.display=s.mode==='demo'?'':'none';

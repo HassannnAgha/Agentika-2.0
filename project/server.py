@@ -129,8 +129,15 @@ def next_id():
     with lock:
         _seq[0] += 1; return _seq[0]
 
+_AGENT_PREFIX = {"Operations": "operations", "Project Management": "project", "Sales": "sales", "Marketing": "marketing"}
+
 def log(msg, **kw):
-    LOG.insert(0, {"t": time.strftime("%H:%M:%S"), "msg": msg, **kw}); del LOG[200:]
+    """One line of Live activity. Tagged with the agent it belongs to (from the action, or the line's opening words) and a timestamp,
+    so the dashboard can draw each agent's lane and activity chart."""
+    if "agent" not in kw:
+        a = PENDING.get(kw.get("id")) if kw.get("id") else None
+        kw["agent"] = AGENT_OF.get(a["cls"]) if a else next((v for k, v in _AGENT_PREFIX.items() if msg.startswith(k)), None)
+    LOG.insert(0, {"t": time.strftime("%H:%M:%S"), "ts": time.time(), "msg": msg, **kw}); del LOG[200:]
 
 # ------------------------------------------------------------------ persistence: evidence and open actions survive restarts
 def save():
@@ -175,7 +182,9 @@ def execute(a):
     if ok is not None:
         before = _earned(a["agent"], a["cls"]); gate.record_outcome(a["agent"], a["cls"], bool(ok)); trust_event(a["agent"], a["cls"], "outcome_ok" if ok else "outcome_failed", before)
     if ok is False and a["decision"]["route"] in ("auto", "recall"): mark_checkin(a["agent"], a["cls"], "the last one it did on its own failed its check")
-    log(f"executed {a['cls']} #{a['id']} ({'verified' if ok else 'FAILED postcondition' if ok is False else 'unverified'})")
+    alone = a["decision"]["route"] in ("auto", "recall")
+    log(f"{a['label']} for {a['who']}: done{' on its own' if alone else ', as you approved'}" + (", and checked" if ok else ", but its check FAILED" if ok is False else ""),
+        id=a["id"], kind="done_alone" if alone else "done")
     save()
     try: _after(a, ok)
     except Exception as e: log(f"follow-on step failed ({type(e).__name__}) after #{a['id']}")
@@ -190,7 +199,7 @@ def _after(a, ok):
     elif cls in ("assign_subtask", "reassign_stalled_task"): specs = agents.pm_notify(a)                          # tell the teammate
     if specs:
         out = _submit(specs); a["followups"] = [x["id"] for x in out]
-        log(f"#{a['id']} set {len(out)} follow-on proposal{'s' if len(out) != 1 else ''} in motion", id=a["id"])
+        log(f"{a['label']} for {a['who']} set {len(out)} next step{'s' if len(out) != 1 else ''} in motion", agent=AGENT_OF.get(out[0]["cls"]) if out else None, kind="handoff")
 
 # ------------------------------------------------------------------ guardrails that need the business memory (the gate engine stays pure)
 def _on_record(cls, cp, to):
@@ -301,7 +310,7 @@ def _propose(p: Proposal):
         PENDING[a["id"]] = a; audit("proposed", a, cited=p.cited)
         if a.get("status") == "awaiting": a["approvers"] = [m["name"] for m in eligible_approvers(a)]
         if a.get("status") in ("awaiting", "recall"): alert_owner(a)
-        log(f"{LABEL_OF[p.cls]} for {a['who']} -> {r.upper()}: {d['why']}", id=a["id"])
+        log(f"{LABEL_OF[p.cls]} for {a['who']} -> {r.upper()}: {d['why']}", id=a["id"], route=r)
         if r == "auto": execute(a)
         else: save()
         return a
@@ -744,8 +753,9 @@ def run_scans():
     res = {"quiet_clients": _submit(_dedup(agents.ops_scan(int(os.getenv("QUIET_DAYS", "14"))))),
            "stalled_tasks": _submit(_dedup(agents.pm_stalled(float(os.getenv("STALL_DAYS", "7")))))}
     SCHED.update(last_scan=time.strftime("%Y-%m-%d %H:%M:%S"), last_scan_result={k: len(v) for k, v in res.items()})
-    log(f"Operations checked {len(STORE.clients())} clients for silence: {len(res['quiet_clients'])} new proposal{'s' if len(res['quiet_clients']) != 1 else ''}. "
-        f"Project Management checked {len([t for t in (persist.get('tasks', []) or []) if t.get('status') != 'complete'])} open tasks: {len(res['stalled_tasks'])} stalled.", kind="sweep")
+    log(f"Operations checked {len(STORE.clients())} clients for silence: {len(res['quiet_clients'])} new proposal{'s' if len(res['quiet_clients']) != 1 else ''}.", kind="sweep")
+    log(f"Project Management checked {len([t for t in (persist.get('tasks', []) or []) if t.get('status') != 'complete'])} open tasks for anything stalled: "
+        f"{len(res['stalled_tasks'])} found.", kind="sweep")
     return res
 
 @app.post("/api/agents/run")
