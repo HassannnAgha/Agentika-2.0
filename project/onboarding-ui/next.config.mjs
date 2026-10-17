@@ -63,6 +63,8 @@ const toGate = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // AI drafting can take longer than the 30 s default when the model provider is slow; don't cut the agents off mid-draft
+  experimental: { proxyTimeout: 120_000 },
   async rewrites() {
     return { beforeFiles: toGate.map(([source, dest]) => ({ source, destination: `${GATE}${dest}` })) };
   },

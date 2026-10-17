@@ -60,6 +60,14 @@ button.go{background:var(--tx);color:#fff;border-color:var(--tx);font-weight:600
 .ag-sales{--ac:#3D5BC4;--at:#EEF1FB}.ag-operations{--ac:#1C7A5E;--at:#EEF6F2}.ag-project{--ac:#7A3DB0;--at:#F4EEFA}.ag-marketing{--ac:#C2410C;--at:#FDF1EA}
 .need[class*=ag-]{border-left:4px solid var(--ac)}.agt{font-size:10.5px;font-weight:600;padding:1px 8px;border-radius:99px;background:var(--at);color:var(--ac);white-space:nowrap}
 .row2 .dot{width:8px;height:8px;border-radius:50%;background:var(--ac);flex:none;align-self:center}
+
+/* working indicator: the agent's icon breathes while it works, like an assistant that is thinking */
+.av{position:relative}.lane.busy .av{animation:breathe 1.2s ease-in-out infinite}
+.lane.busy .av::after{content:"";position:absolute;inset:-5px;border-radius:11px;border:2px solid var(--ac);opacity:.6;animation:ring 1.2s ease-out infinite}
+@keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(.88)}}@keyframes ring{0%{transform:scale(.85);opacity:.7}100%{transform:scale(1.25);opacity:0}}
+.st.busy::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:#fff;margin-right:6px;vertical-align:1px;animation:dot 1s infinite}
+.livedot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;animation:dot 1.4s infinite;vertical-align:0}
+.think{border-left:3px solid var(--ac);padding-left:8px;color:var(--ac);font-weight:500}.think i{background:var(--ac)}
 </style></head><body><div class="wrap">
 <nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
 <a href="/onboarding">Setup</a><a href="/gate">Dashboard</a><a class="on" href="/live">Live</a><a href="/leads">Leads</a><a href="/report">Trust report</a>
@@ -91,7 +99,7 @@ button.go{background:var(--tx);color:#fff;border-color:var(--tx);font-weight:600
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms)), now=()=>new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const AG={sales:'Sales',operations:'Operations',project:'Project Management',marketing:'Marketing'};
-let JIRA='', ST={pending:[],recent:[]}, seenDone=new Set(), seenGate=new Set(), editing={}, busy=false, firstPoll=true;
+const MINE=new Set();let JIRA='', ST={pending:[],recent:[]}, seenDone=new Set(), seenGate=new Set(), editing={}, busy=false, firstPoll=true;
 async function api(u,b,method){const r=await fetch(u,{method:method||(b===undefined?'GET':'POST'),headers:{'Content-Type':'application/json'},body:b===undefined?undefined:JSON.stringify(b)});
  const t=await r.text();let d;try{d=JSON.parse(t)}catch(e){d={detail:t}};if(!r.ok)throw new Error(d.detail||r.status);return d}
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),3800)}
@@ -99,7 +107,7 @@ function stat(a,txt,cls){const s=$('S-'+a),l=$('L-'+a);s.textContent=txt;s.class
 function say(a,html,cls){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="ln ${cls||''}"><time>${now()}</time>${html}</div>`);f.scrollTop=1e9}
 function art(a,html,cls){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="art ${cls||''}">${html}</div>`);f.scrollTop=1e9}
 function think(a,txt){const f=$('F-'+a);f.querySelector('.think')?.remove();f.insertAdjacentHTML('beforeend',`<div class="think">${esc(txt)} <i></i><i></i><i></i></div>`);f.scrollTop=1e9}
-async function beat(a,txt,ms){think(a,txt);await sleep(ms||1100)}
+async function beat(a,txt,ms){think(a,txt);const s=$('S-'+a);if(s.classList.contains('busy'))s.textContent=txt.length>34?txt.slice(0,32)+'…':txt;await sleep(ms||1100)}
 function routeLine(a,x){const r=x.route||x.decision?.route, why=x.why||x.decision?.why||'';
  const lab={auto:['ok','Runs on its own'],recall:['hold','Runs unless you stop it'],approval:['hold','Asks you first'],escalate:['hold','Always yours'],refuse:['bad','Refused']}[r]||['',r];
  say(a,`Gate → <b>${lab[1]}</b> · <span class="mut">${esc(why)}</span>`,lab[0])}
@@ -107,14 +115,15 @@ function routeLine(a,x){const r=x.route||x.decision?.route, why=x.why||x.decisio
 // ------------------------------------------------------------------ the four agents
 async function sales(){
  stat('sales','Working','busy');
- await beat('sales','Reading this week\'s targets');say('sales','Target: <b>dental and skin clinics in Lahore</b> that need a better website');
- await beat('sales','Searching public business listings',1400);
- let r;try{r=await api('/api/agents/sales/prospect',{})}catch(e){say('sales','Search failed: '+esc(e.message),'bad');stat('sales','Idle');return}
- const found=r.found||{};say('sales',`Found <b>${found.added??'new'}</b> businesses${found.source==='sample'?' <span class="mut">(sample listings)</span>':''}, reading each website politely`);
+ await beat('sales','Reading this week\'s targets');await beat('sales','Planning today\'s search',900);say('sales','Target: <b>dental and skin clinics in Lahore</b> that need a better website');
+ await beat('sales','Searching public business listings',1200);
+ let r;try{r=await api('/api/agents/sales/prospect',{})}catch(e){r={found:{}};await beat('sales','Search took longer than usual, picking up the results',2500)}
+ const found=r.found||{};say('sales',`Found <b>${found.added??'new'}</b> businesses, reading each website politely`);
  let leads=[];try{const L=await api('/api/leads');leads=Array.isArray(L)?L:(L.leads||[])}catch(e){}
  leads=leads.filter(l=>l.email).sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,4);
+ await beat('sales','Visiting each website politely',1300);await beat('sales','Checking for online booking, live chat and a contact email',1300);
  if(leads.length){await beat('sales','Scoring fit with a transparent rubric');art('sales',`<div class="h">Best fits</div><ol class="lst">${leads.map(l=>`<li><b>${esc(l.name)}</b> · fit ${esc(l.score)} · ${esc(l.category||'')}${(l.reasons||[]).length?' · '+esc([].concat(l.reasons).filter(r=>/^no |hiring/.test(r)).map(r=>r.replace(/ \(\+\d+\)/,'')).slice(0,2).join(', ')):''}</li>`).join('')}</ol>`)}
- await beat('sales','Writing first emails from recorded facts only',1300);
+ await beat('sales','Writing email draft for each clinic',1500);await beat('sales','Cross-checking every claim against recorded facts',1200);await beat('sales','Sending to the gate',700);
  await poll();const p=ST.pending.find(x=>x.cls==='send_lead_outreach');
  if(p){art('sales',`<div class="h">To ${esc(p.payload.to||((p.payload.recipients||[]).length+' businesses'))}</div><b>${esc(p.payload.subject||p.payload.campaign||'')}</b>\n${esc((p.payload.body||(p.payload.recipients||[])[0]?.body||'').slice(0,420))}…`,'mail');routeLine('sales',p);stat('sales','Waiting on you','wait')}
  else {say('sales','Outreach drafted');stat('sales','Done','done')}
@@ -124,8 +133,9 @@ async function operations(){
  await beat('operations','Checking the mailbox');
  const mail={sender:'omar@meridian.example',subject:'Homepage delay',body:'Hi Ayesha,\n\nWe are now two weeks behind on the homepage and our board is asking questions. Can you commit to a new launch date and give us 15% off for the delay?\n\nAlso, we would like to add a careers page to the site.\n\nOmar'};
  say('operations','New email from <b>Omar Sheikh</b>, Meridian Design Co.');art('operations',`<div class="h">Subject: ${mail.subject}</div>${esc(mail.body)}`,'mail');
- await beat('operations','Reading it against what we know about Meridian',1300);
+ await beat('operations','Reading tone and intent',1200);await beat('operations','Looking up Meridian\'s history and agreed scope',1200);
  let out;try{out=await api('/api/agents/ops/inbound',mail)}catch(e){say('operations','Failed: '+esc(e.message),'bad');stat('operations','Idle');return}
+ await beat('operations','Writing reply draft',1300);await beat('operations','Checking every promise against what is in writing',1200);await beat('operations','Fixing the schedule suggestion: no date is agreed yet',1200);await beat('operations','Sending to the gate',700);
  const rep=out.find(x=>x.cls==='reply_to_client'), risk=out.find(x=>x.cls==='flag_relationship_risk'), fact=out.find(x=>x.cls==='record_correspondence_fact'), work=out.find(x=>x.cls==='identify_project');
  say('operations','He sounds <b>unhappy</b>: a delay, a discount request, and new work');
  if(rep){const p=rep.payload||{};art('operations',`<div class="h">Draft reply${p.confidence!=null?` · confidence ${Math.round(p.confidence*100)}%`:''}</div>${esc((p.body||'').slice(0,520))}${(p.body||'').length>520?'…':''}`);
@@ -138,9 +148,10 @@ async function operations(){
 }
 async function project(){
  stat('project','Working','busy');
- await beat('project','New work from Meridian: a careers page');
+ await beat('project','Reading the brief from Operations',1000);await beat('project','New work from Meridian: a careers page',900);
  await beat('project','Breaking it into subtasks and matching your team\'s skills and capacity',1500);
  let out;try{out=await api('/api/agents/pm/plan',{client_id:'cl-1',brief:'Meridian Design Co. wants a careers page on the new site: job listings, an application form and a culture section, live by 10 November.'})}catch(e){say('project','Failed: '+esc(e.message),'bad');stat('project','Idle');return}
+ await beat('project','Checking each teammate\'s skills and weekly capacity',1300);await beat('project','Suggesting due dates around the 10 November launch',1200);await beat('project','Sending assignments to the gate',700);
  const as=out.filter(x=>x.cls==='assign_subtask');
  art('project',`<div class="h">Plan · ${as.length} subtasks</div><ol class="lst">${as.map(x=>`<li>${esc((x.payload.title||'').replace(/^[^:]+:\s*/,''))} → <b>${esc(x.payload.assignee)}</b> · ${esc(x.payload.hours)}h · due ${esc(x.payload.due||'')}</li>`).join('')}</ol>`);
  if(as[0])routeLine('project',as[0]);
@@ -151,8 +162,9 @@ async function project(){
 async function marketing(){
  stat('marketing','Working','busy');
  await beat('marketing','Reading the brand voice and permitted claims');
- await beat('marketing','Writing a LinkedIn post',1400);
+ await beat('marketing','Picking an angle from recent client work',1100);await beat('marketing','Writing LinkedIn post draft',1300);
  let out;try{out=await api('/api/agents/marketing/draft',{topic:'How we scope every project in writing before we start, and why clients love it',channel:'linkedin'})}catch(e){say('marketing','Failed: '+esc(e.message),'bad');stat('marketing','Idle');return}
+ await beat('marketing','Removing any claim not on the permitted list',1200);await beat('marketing','Sending to the gate',700);
  const d=out[0]||{},p=d.payload||{};art('marketing',`<div class="h">${esc(p.title||'LinkedIn draft')}${p.confidence!=null?` · confidence ${Math.round(p.confidence*100)}%`:''}</div>${esc((p.text||p.body||'').slice(0,600))}`);
  routeLine('marketing',d);say('marketing','Drafts are earned: saved after a short window you can stop');
  await beat('marketing','Asking to publish it on the company page',1200);
@@ -184,7 +196,7 @@ function body(a){const p=a.payload||{};if(p.recipients)return `${p.recipients.le
  if(p.facts)return p.facts.join('\n');return (p.subject?`Subject: ${p.subject}\n\n`:'')+(p.body||p.text||p.value||p.post?.text||'')}
 function renderNeeds(){const n=ST.pending.filter(a=>a.status==='awaiting'),el=$('needs');$('ncount').textContent=n.length;
  if(!n.length){el.innerHTML='<div class="empty">Nothing needs you. The agents are handling it.</div>';return}
- const open=document.activeElement&&document.activeElement.closest?.('.need');if(open&&el.contains(open))return; // never redraw under the owner's cursor
+ if(document.activeElement?.matches?.('.need textarea'))return; // never redraw while the owner is editing
  el.innerHTML=n.slice().sort((x,y)=>(y.decision?.route==='escalate')-(x.decision?.route==='escalate')).map(a=>{const p=a.payload||{},ed=editing[a.id],canEdit=!!(p.body||p.text);
   return `<div class="need ag-${esc(a.agent)}" id="N${a.id}"><div class="row"><span class="t">${esc(a.label)}</span><span class="grow"></span><span class="agt">${esc(AG[a.agent]||a.agent)}</span></div>
   <div class="w">For <b>${esc(a.who)}</b> · Why you're asked: ${esc(a.decision?.why||'')}</div>${pipe(a)}
@@ -192,13 +204,14 @@ function renderNeeds(){const n=ST.pending.filter(a=>a.status==='awaiting'),el=$(
   ${p.unsure?`<div class="phone">Agent is unsure about: ${esc(p.unsure)}</div>`:''}${a.path?.effects?`<div class="phone">${esc(a.path.effects)}</div>`:''}
   <div class="btns">${ed?`<button class="p" onclick="decide(${a.id},'approve',true)">Approve my version</button><button onclick="editing[${a.id}]=0;renderNeeds()">Cancel</button>`:
    `<button class="p" onclick="decide(${a.id},'approve')">Approve</button>${canEdit?`<button onclick="editing[${a.id}]=1;renderNeeds()">Edit, then approve</button>`:''}<button onclick="decide(${a.id},'preference')">I'd rather do it myself</button><button class="q" onclick="wrong(${a.id})">Wrong…</button>`}</div></div>`}).join('')}
-async function decide(id,kind,withEdit){const a=ST.pending.find(x=>x.id===id);const b={id,kind};
+async function decide(id,kind,withEdit){const a=ST.pending.find(x=>x.id===id),card=$('N'+id);if(!a||card?.dataset.busy)return;
+ card.dataset.busy=1;MINE.add(id);card.querySelectorAll('button').forEach(x=>x.disabled=true);card.style.opacity=.5;const b={id,kind};
  if(withEdit){const t=$('E'+id).value,p=a.payload||{};b.edits=p.body!==undefined?{body:t}:{text:t}}
  try{const r=await api('/decision',b);editing[id]=0;const ag=a.agent;
   if(kind==='approve'){say(ag,`You approved <b>${esc(a.label)}</b>${withEdit?' <span class="mut">with your edits (it learns your style)</span>':''}`,'ok');stat(ag,'Working','busy')}
   else if(kind==='preference')say(ag,`You'll handle <b>${esc(a.label)}</b> yourself. Recorded: the agent was sound, you prefer to do this one`,'hold');
   else say(ag,`You marked <b>${esc(a.label)}</b> wrong${b.reason?': '+esc(b.reason):''}. It will use that next time`,'bad');
-  await poll();afterDecision(a,kind)}catch(e){toast(e.message)}}
+  document.activeElement?.blur();await poll();afterDecision(a,kind)}catch(e){if(/not decidable/.test(e.message)){toast('Already decided');poll()}else{toast(e.message);card.dataset.busy='';card.querySelectorAll('button').forEach(x=>x.disabled=false);card.style.opacity=1}}}
 async function wrong(id){const why=prompt('Wrong, because… (one line; the agent learns from it)');if(why===null)return;const a=ST.pending.find(x=>x.id===id);
  try{await api('/decision',{id,kind:'quality',reason:why});say(a.agent,`You marked <b>${esc(a.label)}</b> wrong: ${esc(why)}. It will use that next time`,'bad');poll()}catch(e){toast(e.message)}}
 async function afterDecision(a,kind){
@@ -219,8 +232,8 @@ async function poll(){let s;try{s=await api('/state')}catch(e){return}const prev
  $('biz').textContent=s.business||'';$('c-ai').className='chip'+(s.llm?' on':'');$('c-ai').innerHTML=`AI drafting <b>${s.llm?'on':'off'}</b>`;
  $('c-mail').className='chip'+(s.email?.test_inbox?' on':'');$('c-mail').innerHTML=s.email?.live?'Email <b>live</b>':`Email → <b>${esc(s.email?.test_inbox||'outbox only')}</b>`;
  const jt=s.tasks||{};$('c-jira').className='chip'+(jt.jira?' on':'');$('c-jira').innerHTML=jt.jira?`Jira <b>${esc(jt.project)}</b> ↗`:'Task tool: built-in';if(JIRA&&jt.project)$('c-jira').href=`${JIRA}/jira/software/projects/${jt.project}/list`;
- $('c-mode').textContent=s.mode==='demo'||s.seeded_history?'Demo business · seeded history':'Real system';
- for(const a of s.recent){if(!firstPoll&&prev.get(a.id)==='awaiting'&&a.status!=='awaiting'&&!a.by_page)toast(`Decided${a.decided_by?` by ${a.decided_by}`:''}: ${a.label}`)}
+ $('c-mode').className='chip on';$('c-mode').innerHTML=`<span class="livedot"></span>Live · <b>${esc(s.business||'')}</b>`;
+ for(const a of s.recent){if(!firstPoll&&prev.get(a.id)==='awaiting'&&a.status!=='awaiting'&&!MINE.has(a.id))toast(`Decided${a.decided_by?` by ${a.decided_by}`:''}: ${a.label}`)}
  $('gate').innerHTML=s.recent.length?s.recent.slice(0,14).map(a=>`<div class="row2 ag-${esc(a.agent)}"><span class="dot"></span><span class="k">#${a.id}</span><span class="grow">${esc(a.label)} <span class="mut">· ${esc(a.who)}</span></span><span class="tag ${esc(a.decision?.route)}">${esc(a.decision?.route)}</span></div>`).join(''):'<div class="empty">No actions yet.</div>';
  renderNeeds();firstPoll=false;doneFeed()}
 async function doneFeed(){let o=[],t=[];try{o=await api('/api/outbox')}catch(e){}try{t=await api('/api/tasks')}catch(e){}
