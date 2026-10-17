@@ -3,7 +3,7 @@
 <style>
 /* A live view of one working day: four agents doing real work through the real gate, and the owner stepping in where it matters. */
 .wrap{max-width:1440px}
-.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-8px 0 18px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:14px 0 14px}
 .chip{font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);background:#fff;color:var(--dim);white-space:nowrap;text-decoration:none}
 .chip b{color:var(--tx)}.chip.on{border-color:var(--ok);color:var(--ok);background:var(--tint-ok)}
 .clock{font:600 13px var(--mono);color:var(--tx)}
@@ -51,6 +51,15 @@
 .toast.on{opacity:1}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 16px}
 button.go{background:var(--tx);color:#fff;border-color:var(--tx);font-weight:600;padding:9px 16px}
+
+/* one colour per agent, everywhere it appears */
+.lane{--ac:var(--line)}#L-sales{--ac:#3D5BC4;--at:#EEF1FB}#L-operations{--ac:#1C7A5E;--at:#EEF6F2}#L-project{--ac:#7A3DB0;--at:#F4EEFA}#L-marketing{--ac:#C2410C;--at:#FDF1EA}
+.lane{border-top:4px solid var(--ac)}.lane .lh{background:var(--at)}.lane .ln{border-left:3px solid var(--ac);padding-left:8px}
+.lane.busy{border-color:var(--ac);border-top-width:4px;box-shadow:0 0 0 3px var(--at)}.lane.wait{border-top-color:var(--ac)}
+.st.busy{background:var(--ac);color:#fff}
+.ag-sales{--ac:#3D5BC4;--at:#EEF1FB}.ag-operations{--ac:#1C7A5E;--at:#EEF6F2}.ag-project{--ac:#7A3DB0;--at:#F4EEFA}.ag-marketing{--ac:#C2410C;--at:#FDF1EA}
+.need[class*=ag-]{border-left:4px solid var(--ac)}.agt{font-size:10.5px;font-weight:600;padding:1px 8px;border-radius:99px;background:var(--at);color:var(--ac);white-space:nowrap}
+.row2 .dot{width:8px;height:8px;border-radius:50%;background:var(--ac);flex:none;align-self:center}
 </style></head><body><div class="wrap">
 <nav class="top"><a class="brand" href="/gate"><span class="mark">B</span>Bizzii</a>
 <a href="/onboarding">Setup</a><a href="/gate">Dashboard</a><a class="on" href="/live">Live</a><a href="/leads">Leads</a><a href="/report">Trust report</a>
@@ -68,10 +77,10 @@ button.go{background:var(--tx);color:#fff;border-color:var(--tx);font-weight:600
   <div class="lane" id="L-sales"><div class="lh"><div class="av" style="background:#3D5BC4">S</div><div><h3>Sales</h3><div class="sub">Finds and contacts new clients</div></div><span class="st" id="S-sales">Idle</span></div><div class="feed" id="F-sales"></div></div>
   <div class="lane" id="L-operations"><div class="lh"><div class="av" style="background:#1C7A5E">O</div><div><h3>Operations</h3><div class="sub">Reads client mail, replies, spots risk</div></div><span class="st" id="S-operations">Idle</span></div><div class="feed" id="F-operations"></div></div>
   <div class="lane" id="L-project"><div class="lh"><div class="av" style="background:#7A3DB0">P</div><div><h3>Project Management</h3><div class="sub">Plans work, assigns it in Jira</div></div><span class="st" id="S-project">Idle</span></div><div class="feed" id="F-project"></div></div>
-  <div class="lane" id="L-marketing"><div class="lh"><div class="av" style="background:#A96A10">M</div><div><h3>Marketing</h3><div class="sub">Writes posts in your brand voice</div></div><span class="st" id="S-marketing">Idle</span></div><div class="feed" id="F-marketing"></div></div>
+  <div class="lane" id="L-marketing"><div class="lh"><div class="av" style="background:#C2410C">M</div><div><h3>Marketing</h3><div class="sub">Writes posts in your brand voice</div></div><span class="st" id="S-marketing">Idle</span></div><div class="feed" id="F-marketing"></div></div>
  </div>
  <div class="side">
-  <div class="panel"><div class="ph"><h3>Needs you</h3><span class="cnt" id="ncount">0</span><span class="grow"></span><span class="mut" style="font-size:11px">also sent to your phone</span></div><div id="needs"><div class="empty">Nothing needs you yet.</div></div></div>
+  <div class="panel"><div class="ph"><h3>Needs you</h3><span class="cnt" id="ncount">0</span></div><div id="needs"><div class="empty">Nothing needs you yet.</div></div></div>
   <div class="panel"><div class="ph"><h3>Gate decisions</h3></div><div class="rows" id="gate"><div class="empty">No actions yet.</div></div></div>
   <div class="panel"><div class="ph"><h3>Done for you</h3></div><div class="rows" id="done"><div class="empty">Nothing yet.</div></div></div>
  </div>
@@ -177,13 +186,12 @@ function renderNeeds(){const n=ST.pending.filter(a=>a.status==='awaiting'),el=$(
  if(!n.length){el.innerHTML='<div class="empty">Nothing needs you. The agents are handling it.</div>';return}
  const open=document.activeElement&&document.activeElement.closest?.('.need');if(open&&el.contains(open))return; // never redraw under the owner's cursor
  el.innerHTML=n.slice().sort((x,y)=>(y.decision?.route==='escalate')-(x.decision?.route==='escalate')).map(a=>{const p=a.payload||{},ed=editing[a.id],canEdit=!!(p.body||p.text);
-  return `<div class="need" id="N${a.id}"><div class="row"><span class="t">${esc(a.label)}</span><span class="grow"></span><span class="tag ${esc(a.decision?.route)}">${esc(AG[a.agent]||a.agent)}</span></div>
+  return `<div class="need ag-${esc(a.agent)}" id="N${a.id}"><div class="row"><span class="t">${esc(a.label)}</span><span class="grow"></span><span class="agt">${esc(AG[a.agent]||a.agent)}</span></div>
   <div class="w">For <b>${esc(a.who)}</b> · Why you're asked: ${esc(a.decision?.why||'')}</div>${pipe(a)}
   ${ed?`<textarea id="E${a.id}">${esc(p.body||p.text||'')}</textarea>`:`<div class="art" style="max-height:170px;overflow:auto">${esc(body(a)).slice(0,1400)}</div>`}
   ${p.unsure?`<div class="phone">Agent is unsure about: ${esc(p.unsure)}</div>`:''}${a.path?.effects?`<div class="phone">${esc(a.path.effects)}</div>`:''}
   <div class="btns">${ed?`<button class="p" onclick="decide(${a.id},'approve',true)">Approve my version</button><button onclick="editing[${a.id}]=0;renderNeeds()">Cancel</button>`:
-   `<button class="p" onclick="decide(${a.id},'approve')">Approve</button>${canEdit?`<button onclick="editing[${a.id}]=1;renderNeeds()">Edit, then approve</button>`:''}<button onclick="decide(${a.id},'preference')">I'd rather do it myself</button><button class="q" onclick="wrong(${a.id})">Wrong…</button>`}</div>
-  <div class="phone">📱 Also sent to your phone as a one-tap link</div></div>`}).join('')}
+   `<button class="p" onclick="decide(${a.id},'approve')">Approve</button>${canEdit?`<button onclick="editing[${a.id}]=1;renderNeeds()">Edit, then approve</button>`:''}<button onclick="decide(${a.id},'preference')">I'd rather do it myself</button><button class="q" onclick="wrong(${a.id})">Wrong…</button>`}</div></div>`}).join('')}
 async function decide(id,kind,withEdit){const a=ST.pending.find(x=>x.id===id);const b={id,kind};
  if(withEdit){const t=$('E'+id).value,p=a.payload||{};b.edits=p.body!==undefined?{body:t}:{text:t}}
  try{const r=await api('/decision',b);editing[id]=0;const ag=a.agent;
@@ -213,7 +221,7 @@ async function poll(){let s;try{s=await api('/state')}catch(e){return}const prev
  const jt=s.tasks||{};$('c-jira').className='chip'+(jt.jira?' on':'');$('c-jira').innerHTML=jt.jira?`Jira <b>${esc(jt.project)}</b> ↗`:'Task tool: built-in';if(JIRA&&jt.project)$('c-jira').href=`${JIRA}/jira/software/projects/${jt.project}/list`;
  $('c-mode').textContent=s.mode==='demo'||s.seeded_history?'Demo business · seeded history':'Real system';
  for(const a of s.recent){if(!firstPoll&&prev.get(a.id)==='awaiting'&&a.status!=='awaiting'&&!a.by_page)toast(`Decided${a.decided_by?` by ${a.decided_by}`:''}: ${a.label}`)}
- $('gate').innerHTML=s.recent.length?s.recent.slice(0,14).map(a=>`<div class="row2"><span class="k">#${a.id}</span><span class="grow">${esc(a.label)} <span class="mut">· ${esc(a.who)}</span></span><span class="tag ${esc(a.decision?.route)}">${esc(a.decision?.route)}</span></div>`).join(''):'<div class="empty">No actions yet.</div>';
+ $('gate').innerHTML=s.recent.length?s.recent.slice(0,14).map(a=>`<div class="row2 ag-${esc(a.agent)}"><span class="dot"></span><span class="k">#${a.id}</span><span class="grow">${esc(a.label)} <span class="mut">· ${esc(a.who)}</span></span><span class="tag ${esc(a.decision?.route)}">${esc(a.decision?.route)}</span></div>`).join(''):'<div class="empty">No actions yet.</div>';
  renderNeeds();firstPoll=false;doneFeed()}
 async function doneFeed(){let o=[],t=[];try{o=await api('/api/outbox')}catch(e){}try{t=await api('/api/tasks')}catch(e){}
  const rows=[...o.filter(m=>!m.skipped).map(m=>({k:m.t?.slice(11,16)||'',h:`📧 <b>${esc(m.subject)}</b> <span class="mut">→ ${esc(m.delivered_to?'your inbox':'outbox')} (for ${esc(m.intended_to)})</span>`})),
